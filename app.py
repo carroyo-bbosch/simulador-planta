@@ -43,7 +43,8 @@ def normalizar_procesos(df_proc):
     registros = []
     for _, fila in df_proc.iterrows():
         subproyecto = str(fila.get(col_subproj, "")).strip()
-        if not subproyecto or subproyecto in ["None", "nan"]: continue
+        if not subproyecto or subproyecto in ["None", "nan"]: 
+            continue
         
         kilos_cargados = pd.to_numeric(fila.get(col_cargados, 0), errors='coerce') or 0
         es_estimado = (kilos_cargados <= 0)
@@ -70,7 +71,7 @@ def normalizar_procesos(df_proc):
     return pd.DataFrame(registros)
 
 # -------------------------------------------------------------
-# 2. INTERFAZ: CONTROLES LATERALES (DOTACIÓN)
+# 2. CONTROLES LATERALES (DOTACIÓN)
 # -------------------------------------------------------------
 st.sidebar.header("⚙️ Jornada Laboral")
 horas_sem = st.sidebar.number_input("Horas laborables / semana", value=44, step=1)
@@ -87,7 +88,7 @@ dotacion = {
     "Galvanizado": mod_galv
 }
 
-# Ratios estándar kg/HH
+# Ratios estándar de productividad (kg/HH)
 ratios = {
     "CNC": 120.0,
     "Soldadura": 45.0,
@@ -110,7 +111,7 @@ try:
         
     cols_backlog = df_backlog_raw.columns.tolist()
     
-    # Detección inteligente de columnas en Backlog
+    # Detección de columnas clave en Backlog
     col_sub_backlog = next((c for c in cols_backlog if "sub-proyecto" in c.lower() or "subproyecto" in c.lower()), None)
     col_fecha_prog = next((c for c in cols_backlog if "programad" in c.lower() and "fecha" in c.lower()), None)
     if not col_fecha_prog:
@@ -118,11 +119,7 @@ try:
         
     col_despacho_real = next((c for c in cols_backlog if "despacho" in c.lower() and ("real" in c.lower() or "fecha" in c.lower())), None)
 
-    # ---------------------------------------------------------
-    # APLICACIÓN DE REGLAS DE NEGOCIO EN BACKLOG:
-    # 1. Fecha programada no vacía
-    # 2. Fecha real de despacho en blanco
-    # ---------------------------------------------------------
+    # Filtrar solo lotes activos (con fecha programada y sin despacho real)
     valido_fecha_prog = (
         df_backlog_raw[col_fecha_prog].notna() & 
         (df_backlog_raw[col_fecha_prog].astype(str).str.strip() != "") & 
@@ -141,22 +138,25 @@ try:
 
     subproyectos_vivos = df_backlog_activo[col_sub_backlog].dropna().astype(str).str.strip().unique()
 
-    # 4. Normalizar hoja de procesos y filtrar solo los vivos
+    # Normalizar hoja de procesos y filtrar solo los que siguen en fabricación
     df_procesos = normalizar_procesos(df_procesos_raw)
     df_carga = df_procesos[df_procesos["Subproyecto"].isin(subproyectos_vivos)].copy()
 
-    # 5. Mapeo de Ratios y HH Pendientes
-    # Se hace match por coincidencia de texto (CNC, Soldadura, Galvanizado)
+    # Cálculo de HH Pendientes
     def asignar_ratio(nombre_proceso):
         for k, v in ratios.items():
-            if k.lower() in nombre_proceso.lower():
+            if k.lower() in str(nombre_proceso).lower():
                 return v
         return 100.0
 
     df_carga["Productividad"] = df_carga["Proceso"].apply(asignar_ratio)
     df_carga["HH_Pendientes"] = df_carga["Kg_Pendientes"] / df_carga["Productividad"]
 
-    # Agrupación por Proceso
-    resumen = df_carga.groupby("Proceso").agg(
-        Kg_Pendientes=("Kg_Pendientes", "sum"),
-        HH_Pendientes=("HH_Pendientes", "sum")
+    # Agrupación por Proceso (sintaxis compacta de una sola línea)
+    resumen = df_carga.groupby("Proceso", as_index=False)[["Kg_Pendientes", "HH_Pendientes"]].sum()
+
+    def asignar_operarios(nombre_proceso):
+        for k, v in dotacion.items():
+            if k.lower() in str(nombre_proceso).lower():
+                return v
+        return 0
