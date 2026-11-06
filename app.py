@@ -4,6 +4,7 @@ import smartsheet
 import re
 import unicodedata
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime
 
 st.set_page_config(page_title="APS - Control de Carga y Capacidad", layout="wide")
@@ -38,7 +39,7 @@ def limpiar_texto(txt):
     return re.sub(r'[^a-zA-Z0-9]', '', txt).lower()
 
 # -------------------------------------------------------------
-# 1. CARGA Y NORMALIZACIÓN DE SMARTSHEET
+# 1. CONEXIÓN A SMARTSHEET Y NORMALIZACIÓN
 # -------------------------------------------------------------
 @st.cache_data(ttl=300)
 def cargar_hoja(sheet_id):
@@ -103,8 +104,8 @@ def normalizar_procesos(df_proc):
 # -------------------------------------------------------------
 # 2. CONTROLES GENERALES DE PLANTA
 # -------------------------------------------------------------
-st.sidebar.header("⚙️ Parámetros de Turno")
-horas_sem = st.sidebar.number_input("Horas laborales / semana", value=44, step=1)
+st.sidebar.header("⚙️ Parámetros de Operación")
+horas_sem = st.sidebar.number_input("Horas turno / semana por operario", value=44, step=1)
 eficiencia = st.sidebar.slider("Eficiencia Operativa / OEE (%)", 50, 100, 85) / 100.0
 
 st.title("🏭 APS Manufactura: Torres de Transmisión y Subestaciones")
@@ -119,7 +120,7 @@ try:
         df_procesos_raw = cargar_hoja(st.secrets["SHEET_ID_PROCESOS"])
         df_prod_raw = cargar_hoja(st.secrets["SHEET_ID_PRODUCTIVIDAD"])
 
-    # 1. Filtro base de Backlog (Con fecha programada y sin despacho real)
+    # 1. Filtro base de Backlog
     cols_backlog = df_backlog_raw.columns.tolist()
     col_id_fila = next((c for c in cols_backlog if "identificador" in c.lower()), cols_backlog[0])
     col_sub_backlog = next((c for c in cols_backlog if "sub-proyecto" in c.lower() or "subproyecto" in c.lower()), None)
@@ -145,46 +146,42 @@ try:
     else:
         df_backlog_activo = df_backlog_raw[valido_fecha_prog].copy()
 
+    # Formato Año-Semana limpio (Ej: 2026-48)
     df_backlog_activo["Fecha_DT"] = pd.to_datetime(df_backlog_activo[col_fecha_prog], errors='coerce')
     df_backlog_activo = df_backlog_activo.dropna(subset=["Fecha_DT"]).sort_values("Fecha_DT")
     df_backlog_activo["Mes_Entrega"] = df_backlog_activo["Fecha_DT"].dt.strftime("%Y-%m")
-    df_backlog_activo["Semana_Entrega"] = df_backlog_activo["Fecha_DT"].dt.strftime("%Y-Sem%U")
+    df_backlog_activo["Semana_Entrega"] = df_backlog_activo["Fecha_DT"].apply(
+        lambda d: f"{d.isocalendar()[0]}-{d.isocalendar()[1]:02d}"
+    )
     df_backlog_activo["Kg_Prog_Num"] = pd.to_numeric(df_backlog_activo[col_kg_prog], errors='coerce').fillna(0)
 
-    # -------------------------------------------------------------
-    # 2. FILTRO TEMPORAL DINÁMICO (DEFECTO: MES ACTUAL EN ADELANTE)
-    # -------------------------------------------------------------
+    # 2. Filtro de Horizonte Temporal
     st.sidebar.markdown("---")
     st.sidebar.header("📅 Filtro de Horizonte")
-    
     meses_disponibles = sorted(df_backlog_activo["Mes_Entrega"].unique().tolist())
     mes_actual_str = datetime.now().strftime("%Y-%m")
     
-    # Calcular índice por defecto: mes actual o el primer mes futuro disponible
     indice_defecto = 0
     if mes_actual_str in meses_disponibles:
         indice_defecto = meses_disponibles.index(mes_actual_str)
     else:
-        # Si el mes actual no está, busca el primer mes mayor o igual
         futuros = [i for i, m in enumerate(meses_disponibles) if m >= mes_actual_str]
-        if futuros:
-            indice_defecto = futuros[0]
+        if futuros: indice_defecto = futuros[0]
 
     mes_seleccionado = st.sidebar.selectbox(
-        "Mostrar despachos desde el mes:",
+        "Mostrar despachos desde:",
         options=meses_disponibles,
         index=indice_defecto,
-        help="Inicia automáticamente en el mes en curso. Puedes retroceder para revisar meses anteriores."
+        help="Inicia en el mes actual. Puedes retroceder para revisar meses anteriores."
     )
 
-    # Separar backlog del horizonte vs deuda histórica previa al mes
     df_backlog_horizonte = df_backlog_activo[df_backlog_activo["Mes_Entrega"] >= mes_seleccionado].copy()
     df_backlog_previo = df_backlog_activo[df_backlog_activo["Mes_Entrega"] < mes_seleccionado].copy()
     kg_deuda_previa = df_backlog_previo["Kg_Prog_Num"].sum()
 
     subproyectos_horizonte = df_backlog_horizonte[col_sub_backlog].dropna().astype(str).str.strip().unique()
 
-    # 3. Cargar Productividad (kg/HH)
+    # 3. Productividad (kg/HH)
     col_prod_proc = next((c for c in df_prod_raw.columns if "proceso" in c.lower() and "simulador" in c.lower()), df_prod_raw.columns[0])
     col_prod_kghh = next((c for c in df_prod_raw.columns if "kg" in c.lower() and "hh" in c.lower()), df_prod_raw.columns[1])
     
@@ -197,22 +194,46 @@ try:
                 if limpiar_texto(p_oficial) in proc_str:
                     ratios_productividad[p_oficial] = float(kghh_val)
 
-    # 4. Normalizar procesos y filtrar carga para los subproyectos del horizonte
+    # 4. Normalizar procesos y vincular demanda por lote
     df_procesos = normalizar_procesos(df_procesos_raw)
     df_carga = df_procesos[df_procesos["Subproyecto"].isin(subproyectos_horizonte)].copy()
     df_carga["Productividad"] = df_carga["Proceso"].map(lambda p: ratios_productividad.get(p, 80.0))
     df_carga["HH_Pendientes"] = df_carga["Kg_Pendientes"] / df_carga["Productividad"]
 
+    # Repartir los kilos pendientes de cada subproyecto entre sus lotes activos (proporcional a los kg de despacho)
+    kg_tot_subp = df_backlog_horizonte.groupby(col_sub_backlog)["Kg_Prog_Num"].sum().to_dict()
+    registros_lote_proc = []
+    for _, lote in df_backlog_horizonte.iterrows():
+        subp = lote[col_sub_backlog]
+        kg_lote = lote["Kg_Prog_Num"]
+        tot_subp = kg_tot_subp.get(subp, 0)
+        factor = (kg_lote / tot_subp) if tot_subp > 0 else 0
+        
+        cargas_subp = df_carga[df_carga["Subproyecto"] == subp]
+        for _, cp in cargas_subp.iterrows():
+            proc_name = cp["Proceso"]
+            kg_lote_proc = cp["Kg_Pendientes"] * factor
+            registros_lote_proc.append({
+                "ID_Lote": lote[col_id_fila],
+                "Subproyecto": subp,
+                "Fecha_DT": lote["Fecha_DT"],
+                "Fecha_Prog": lote[col_fecha_prog],
+                "Mes_Entrega": lote["Mes_Entrega"],
+                "Semana_Entrega": lote["Semana_Entrega"],
+                "Proceso": proc_name,
+                "Kg_Asignados": kg_lote_proc
+            })
+    df_demanda_detallada = pd.DataFrame(registros_lote_proc)
+
     # -------------------------------------------------------------
-    # 5. MATRIZ EDITABLE DE DOTACIÓN (PROCESO X SEMANA)
+    # 5. MATRIZ DE DOTACIÓN EN SESIÓN
     # -------------------------------------------------------------
     semanas_horizonte = sorted(df_backlog_horizonte["Semana_Entrega"].unique().tolist())
     if len(semanas_horizonte) < 6:
-        semanas_matriz = semanas_horizonte + [f"Futuro-Sem+{i}" for i in range(1, 7 - len(semanas_horizonte))]
+        semanas_matriz = semanas_horizonte + [f"Sem+{i:02d}" for i in range(1, 7 - len(semanas_horizonte))]
     else:
-        semanas_matriz = semanas_horizonte[:12]
+        semanas_matriz = semanas_horizonte[:14]
 
-    # Gestión de sesión para la matriz interactiva
     if "matriz_dotacion" not in st.session_state:
         datos_matriz = {"Proceso": PROCESOS_LINEA}
         for sem in semanas_matriz:
@@ -226,83 +247,62 @@ try:
     # -------------------------------------------------------------
     # 6. PESTAÑAS PRINCIPALES
     # -------------------------------------------------------------
-    tab_ejecutiva, tab_matriz, tab_procesos, tab_prod = st.tabs([
+    tab_ejecutiva, tab_sim_proceso, tab_matriz_global, tab_prod = st.tabs([
         "🚀 Torre de Control & Entregas",
-        "🗓️ Matriz de Capacidad (Semanas)",
-        "🔍 Detalle por Proceso",
+        "🎯 Simulador por Proceso (Carga vs Capacidad)",
+        "🗓️ Matriz Global (12 Procesos)",
         "📋 Productividad (kg/HH)"
     ])
 
     # -------------------------------------------------------------
-    # TAB 2: MATRIZ DE CAPACIDAD
-    # -------------------------------------------------------------
-    with tab_matriz:
-        st.markdown(f"### 🗓️ Matriz de Dotación por Semana (Desde {mes_seleccionado})")
-        st.caption("Ajusta directamente en las celdas el personal asignado a cada proceso según los picos de entrega.")
-
-        column_config = {
-            "Proceso": st.column_config.TextColumn("Proceso Productivo", disabled=True),
-        }
-        for col_sem in semanas_matriz:
-            column_config[col_sem] = st.column_config.NumberColumn(col_sem, min_value=0, max_value=60, step=1)
-
-        matriz_editada = st.data_editor(
-            st.session_state.matriz_dotacion[["Proceso"] + semanas_matriz],
-            column_config=column_config,
-            hide_index=True,
-            use_container_width=True,
-            key="editor_matriz_semanal"
-        )
-        st.session_state.matriz_dotacion.update(matriz_editada)
-        dotacion_promedio = matriz_editada.set_index("Proceso")[semanas_matriz].mean(axis=1).to_dict()
-
-    # -------------------------------------------------------------
-    # TAB 1: TORRE DE CONTROL (VISTA EJECUTIVA)
+    # TAB 1: TORRE DE CONTROL CON LISTA DESPLEGABLE
     # -------------------------------------------------------------
     with tab_ejecutiva:
-        # Alerta de kilos de meses anteriores si existen
+        st.markdown(f"### 📅 Programa de Despacho (Desde {mes_seleccionado})")
         if kg_deuda_previa > 0:
-            st.warning(
-                f"⚠️ **Atención:** Existen **{kg_deuda_previa:,.0f} kg** ({len(df_backlog_previo)} lotes) pendientes "
-                f"con fecha anterior a **{mes_seleccionado}**. Si deseas incluirlos en la simulación, selecciona un mes anterior en el menú lateral."
+            st.warning(f"⚠️ Existen **{kg_deuda_previa:,.0f} kg** ({len(df_backlog_previo)} lotes) pendientes de meses anteriores fuera del filtro.")
+
+        col_filtro, _ = st.columns([2, 3])
+        with col_filtro:
+            filtro_proceso_t1 = st.selectbox(
+                "Filtrar visión por proceso:",
+                ["Consolidado Planta (Despachos Generales)"] + PROCESOS_LINEA,
+                index=0
             )
 
-        st.markdown(f"### 📅 Programa de Despacho (Desde {mes_seleccionado} en adelante)")
         c_mes, c_sem = st.columns(2)
-
-        with c_mes:
-            df_mes = df_backlog_horizonte.groupby("Mes_Entrega", as_index=False)["Kg_Prog_Num"].sum().sort_values("Mes_Entrega")
-            fig_mes = px.bar(
-                df_mes, x="Mes_Entrega", y="Kg_Prog_Num", 
-                text_auto='.2s',
-                title=f"Kilos Programados por Mes (Total: {df_mes['Kg_Prog_Num'].sum():,.0f} kg)",
-                labels={"Mes_Entrega": "Mes", "Kg_Prog_Num": "Kilos Totales"}
-            )
-            fig_mes.update_traces(marker_color='#1f77b4')
-            st.plotly_chart(fig_mes, use_container_width=True)
-
-        with c_sem:
-            df_sem = df_backlog_horizonte.groupby("Semana_Entrega", as_index=False)["Kg_Prog_Num"].sum().sort_values("Semana_Entrega")
-            fig_sem = px.bar(
-                df_sem, x="Semana_Entrega", y="Kg_Prog_Num",
-                text_auto='.2s',
-                title="Kilos Programados por Semana de Salida",
-                labels={"Semana_Entrega": "Semana Calendario", "Kg_Prog_Num": "Kilos"}
-            )
-            fig_sem.update_traces(marker_color='#2ca02c')
-            st.plotly_chart(fig_sem, use_container_width=True)
+        if filtro_proceso_t1 == "Consolidado Planta (Despachos Generales)":
+            with c_mes:
+                df_mes = df_backlog_horizonte.groupby("Mes_Entrega", as_index=False)["Kg_Prog_Num"].sum().sort_values("Mes_Entrega")
+                fig_mes = px.bar(df_mes, x="Mes_Entrega", y="Kg_Prog_Num", text_auto='.2s', title="Kilos Totales por Mes")
+                fig_mes.update_traces(marker_color='#1f77b4')
+                st.plotly_chart(fig_mes, use_container_width=True)
+            with c_sem:
+                df_sem = df_backlog_horizonte.groupby("Semana_Entrega", as_index=False)["Kg_Prog_Num"].sum().sort_values("Semana_Entrega")
+                fig_sem = px.bar(df_sem, x="Semana_Entrega", y="Kg_Prog_Num", text_auto='.2s', title="Kilos Totales por Semana")
+                fig_sem.update_traces(marker_color='#2ca02c')
+                st.plotly_chart(fig_sem, use_container_width=True)
+        else:
+            df_dem_proc = df_demanda_detallada[df_demanda_detallada["Proceso"] == filtro_proceso_t1]
+            with c_mes:
+                df_mes_p = df_dem_proc.groupby("Mes_Entrega", as_index=False)["Kg_Asignados"].sum().sort_values("Mes_Entrega")
+                fig_mes_p = px.bar(df_mes_p, x="Mes_Entrega", y="Kg_Asignados", text_auto='.2s', title=f"Kilos en {filtro_proceso_t1} por Mes")
+                fig_mes_p.update_traces(marker_color='#1f77b4')
+                st.plotly_chart(fig_mes_p, use_container_width=True)
+            with c_sem:
+                df_sem_p = df_dem_proc.groupby("Semana_Entrega", as_index=False)["Kg_Asignados"].sum().sort_values("Semana_Entrega")
+                fig_sem_p = px.bar(df_sem_p, x="Semana_Entrega", y="Kg_Asignados", text_auto='.2s', title=f"Kilos en {filtro_proceso_t1} por Semana")
+                fig_sem_p.update_traces(marker_color='#ff7f0e')
+                st.plotly_chart(fig_sem_p, use_container_width=True)
 
         st.markdown("---")
-        st.markdown("### 🚨 Diagnóstico de Cumplimiento de Entregas por Proyecto")
-        st.caption("Cálculo dinámico: Tiempo restante hasta fecha contractual vs Semanas de evacuación requeridas en la estación más lenta.")
-
-        capacidad_semanal_hh = {
-            p: dotacion_promedio.get(p, 4) * horas_sem * eficiencia 
-            for p in PROCESOS_LINEA
-        }
-
+        st.markdown("### 🚨 Diagnóstico de Cumplimiento de Lotes")
+        
+        # Evaluar cumplimiento general
         ahora = datetime.now()
         analisis_lotes = []
+        dotacion_prom = st.session_state.matriz_dotacion.set_index("Proceso")[semanas_matriz].mean(axis=1).to_dict()
+        cap_semanal_dict = {p: dotacion_prom.get(p, 4) * horas_sem * eficiencia for p in PROCESOS_LINEA}
 
         for _, lote in df_backlog_horizonte.iterrows():
             subp = str(lote[col_sub_backlog]).strip()
@@ -311,30 +311,32 @@ try:
             kg_lote = lote["Kg_Prog_Num"]
             semana_e = lote["Semana_Entrega"]
 
-            dias_disponibles = (fecha_entrega - ahora).days
-            semanas_disp = max(0.2, round(dias_disponibles / 7.0, 1))
+            dias_disp = (fecha_entrega - ahora).days
+            semanas_disp = max(0.2, round(dias_disp / 7.0, 1))
 
             carga_subp = df_carga[df_carga["Subproyecto"] == subp]
-            
-            peor_proceso = "Sin Carga Pendiente"
-            max_semanas_necesarias = 0.0
+            if filtro_proceso_t1 != "Consolidado Planta (Despachos Generales)":
+                carga_subp = carga_subp[carga_subp["Proceso"] == filtro_proceso_t1]
+
+            peor_proceso = "Sin Carga"
+            max_semanas_nec = 0.0
 
             for _, fila_c in carga_subp.iterrows():
                 proc_c = fila_c["Proceso"]
                 hh_nec = fila_c["HH_Pendientes"]
-                cap_hh = capacidad_semanal_hh.get(proc_c, 1)
+                cap_hh = cap_semanal_dict.get(proc_c, 1)
                 semanas_proc = round(hh_nec / cap_hh, 1) if cap_hh > 0 else 0
-                if semanas_proc > max_semanas_necesarias:
-                    max_semanas_necesarias = semanas_proc
+                if semanas_proc > max_semanas_nec:
+                    max_semanas_nec = semanas_proc
                     peor_proceso = proc_c
 
-            brecha = round(semanas_disp - max_semanas_necesarias, 1)
-            if dias_disponibles < 0:
-                estado = "🔴 VENCIDO (Fecha Pasada)"
+            brecha = round(semanas_disp - max_semanas_nec, 1)
+            if dias_disp < 0:
+                estado = "🔴 VENCIDO"
             elif brecha < 0:
                 estado = f"🔴 EN RIESGO ({abs(brecha)} sem atraso)"
             elif brecha <= 1.0:
-                estado = "🟡 AL LÍMITE (Buffer crítico)"
+                estado = "🟡 AL LÍMITE"
             else:
                 estado = "🟢 A TIEMPO"
 
@@ -345,62 +347,139 @@ try:
                 "Semana": semana_e,
                 "Kilos Programados": f"{kg_lote:,.0f} kg",
                 "Semanas Disponibles": semanas_disp,
-                "Semanas Requeridas": max_semanas_necesarias,
-                "Estación Cuello Botella": peor_proceso,
+                "Semanas Requeridas": max_semanas_nec,
+                "Proceso Crítico": peor_proceso,
                 "Diagnóstico": estado
             })
 
         df_analisis = pd.DataFrame(analisis_lotes)
+        st.dataframe(df_analisis.sort_values(by="Semanas Requeridas", ascending=False), use_container_width=True)
 
-        total_lotes = len(df_analisis)
-        lotes_riesgo = len(df_analisis[df_analisis["Diagnóstico"].str.contains("🔴")])
-        lotes_limite = len(df_analisis[df_analisis["Diagnóstico"].str.contains("🟡")])
+    # -------------------------------------------------------------
+    # TAB 2: SIMULADOR INTEGRAL POR PROCESO (FUSIÓN TAB 2 Y 3)
+    # -------------------------------------------------------------
+    with tab_sim_proceso:
+        st.markdown("### 🎯 Balanceo de Capacidad & Simulación por Estación")
+        proceso_foco = st.selectbox("Selecciona la estación a simular:", PROCESOS_LINEA, index=2) # Default CNCL
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Lotes en Horizonte", total_lotes)
-        m2.metric("Lotes en Riesgo de Incumplimiento", lotes_riesgo, delta=f"-{lotes_riesgo}" if lotes_riesgo > 0 else "0", delta_color="inverse")
-        m3.metric("Lotes al Límite de Capacidad", lotes_limite)
+        st.markdown(f"#### 👷 Dotación Semanal en **{proceso_foco}** (Operarios)")
+        st.caption("Edita las celdas directamente para ajustar operarios en las semanas con sobrecarga:")
 
+        # Extraer solo la fila del proceso seleccionado para edición directa
+        df_fila_proc = st.session_state.matriz_dotacion[st.session_state.matriz_dotacion["Proceso"] == proceso_foco][semanas_matriz]
+        
+        cfg_cols = {c: st.column_config.NumberColumn(c, min_value=0, max_value=60, step=1) for c in semanas_matriz}
+        fila_editada = st.data_editor(
+            df_fila_proc,
+            column_config=cfg_cols,
+            hide_index=True,
+            use_container_width=True,
+            key=f"editor_{proceso_foco}"
+        )
+        # Actualizar en la matriz persistente
+        for col_sem in semanas_matriz:
+            st.session_state.matriz_dotacion.loc[st.session_state.matriz_dotacion["Proceso"] == proceso_foco, col_sem] = fila_editada[col_sem].values[0]
+
+        # Ratios y Capacidad por semana para el proceso seleccionado
+        ratio_foco = ratios_productividad.get(proceso_foco, 80.0)
+        
+        # Demanda de kilos por semana para este proceso
+        df_dem_foco = df_demanda_detallada[df_demanda_detallada["Proceso"] == proceso_foco]
+        demanda_sem_dict = df_dem_foco.groupby("Semana_Entrega")["Kg_Asignados"].sum().to_dict()
+
+        datos_balance = []
+        for sem in semanas_matriz:
+            demanda_kg = demanda_sem_dict.get(sem, 0.0)
+            operarios_sem = fila_editada[sem].values[0] if sem in fila_editada.columns else 4
+            capacidad_hh = operarios_sem * horas_sem * eficiencia
+            capacidad_kg = capacidad_hh * ratio_foco
+            
+            # Semáforo: Barra roja si la demanda supera la capacidad
+            es_cuello_botella = demanda_kg > capacidad_kg and demanda_kg > 0
+            color = "#d62728" if es_cuello_botella else "#1f77b4" # Rojo si satura, azul si cabe
+            
+            datos_balance.append({
+                "Semana": sem,
+                "Demanda_Kg": demanda_kg,
+                "Capacidad_Kg": capacidad_kg,
+                "Operarios": operarios_sem,
+                "Color": color,
+                "Alerta": "🔴 SOBRECARGA" if es_cuello_botella else "🟢 OK"
+            })
+        df_balance = pd.DataFrame(datos_balance)
+
+        # Gráficos: Mensual a la izquierda, Semanal con línea a la derecha
+        col_g1, col_g2 = st.columns([2, 3])
+
+        with col_g1:
+            df_mes_foco = df_dem_foco.groupby("Mes_Entrega", as_index=False)["Kg_Asignados"].sum().sort_values("Mes_Entrega")
+            fig_m = px.bar(
+                df_mes_foco, x="Mes_Entrega", y="Kg_Asignados", text_auto='.2s',
+                title=f"Kilos Mensuales en {proceso_foco}",
+                labels={"Mes_Entrega": "Mes", "Kg_Asignados": "Kilos"}
+            )
+            fig_m.update_traces(marker_color='#3366cc')
+            st.plotly_chart(fig_m, use_container_width=True)
+
+        with col_g2:
+            fig_balance = go.Figure()
+
+            # Barras con color condicional (Rojas si superan capacidad)
+            fig_balance.add_trace(go.Bar(
+                x=df_balance["Semana"],
+                y=df_balance["Demanda_Kg"],
+                marker_color=df_balance["Color"],
+                name="Demanda (Kg)",
+                text=[f"{v:,.0f}" if v > 0 else "" for v in df_balance["Demanda_Kg"]],
+                textposition='auto'
+            ))
+
+            # Línea de Capacidad Máxima según la dotación asignada
+            fig_balance.add_trace(go.Scatter(
+                x=df_balance["Semana"],
+                y=df_balance["Capacidad_Kg"],
+                mode='lines+markers',
+                name="Límite de Capacidad (Kg)",
+                line=dict(color='black', width=3, dash='dash'),
+                marker=dict(size=8, color='black')
+            ))
+
+            fig_balance.update_layout(
+                title=f"Carga vs Capacidad Semanal en {proceso_foco} (Rojo = Cuello de Botella)",
+                xaxis_title="Semana (Año-Semana)",
+                yaxis_title="Kilos (Kg)",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(fig_balance, use_container_width=True)
+
+        st.markdown(f"#### 📋 Lotes con Demanda en **{proceso_foco}**")
+        df_dem_foco_show = df_dem_foco[df_dem_foco["Kg_Asignados"] > 0].copy()
+        df_dem_foco_show = df_dem_foco_show.merge(df_balance[["Semana", "Alerta"]], left_on="Semana_Entrega", right_on="Semana", how="left")
+        
         st.dataframe(
-            df_analisis.sort_values(by="Semanas Requeridas", ascending=False),
+            df_dem_foco_show[["ID_Lote", "Subproyecto", "Fecha_Prog", "Semana_Entrega", "Kg_Asignados", "Alerta"]].sort_values(by="Fecha_Prog"),
             use_container_width=True
         )
 
     # -------------------------------------------------------------
-    # TAB 3: DETALLE POR PROCESO
+    # TAB 3: MATRIZ GLOBAL (TODOS LOS PROCESOS X SEMANA)
     # -------------------------------------------------------------
-    with tab_procesos:
-        st.markdown(f"### 🔍 Explorador Individual por Proceso (Horizonte: Desde {mes_seleccionado})")
-        proceso_seleccionado = st.selectbox("Selecciona la estación de trabajo a auditar:", PROCESOS_LINEA, index=10) # 10 = Galvanizado
+    with tab_matriz_global:
+        st.markdown(f"### 🗓️ Matriz Completa de Dotación (12 Procesos $\\times$ Semanas)")
+        st.caption("Esta vista consolida toda la nave industrial. Cualquier cambio aquí se refleja inmediatamente en el simulador.")
 
-        col_p1, col_p2 = st.columns([2, 3])
-        carga_proc = df_carga[df_carga["Proceso"] == proceso_seleccionado]
-        kg_totales_proc = carga_proc["Kg_Pendientes"].sum()
-        ratio_p = ratios_productividad.get(proceso_seleccionado, 80.0)
-        hh_totales_proc = kg_totales_proc / ratio_p
-        operarios_p = dotacion_promedio.get(proceso_seleccionado, 4)
-        cap_sem_proc = operarios_p * horas_sem * eficiencia
+        column_config_g = {"Proceso": st.column_config.TextColumn("Proceso", disabled=True)}
+        for c_sem in semanas_matriz:
+            column_config_g[c_sem] = st.column_config.NumberColumn(c_sem, min_value=0, max_value=60, step=1)
 
-        with col_p1:
-            st.metric("Kilos en Cola", f"{kg_totales_proc:,.0f} kg")
-            st.metric("HH Restantes", f"{hh_totales_proc:,.0f} HH")
-            st.metric("Productividad Activa", f"{ratio_p} kg/HH")
-            st.metric("Capacidad Semanal Media", f"{cap_sem_proc:,.0f} HH/sem")
-            semanas_evac = round(hh_totales_proc / cap_sem_proc, 1) if cap_sem_proc > 0 else 0
-            st.metric("Semanas para Evacuar Carga", f"{semanas_evac} semanas")
-
-        with col_p2:
-            st.markdown(f"#### Kilos Pendientes en **{proceso_seleccionado}** por Subproyecto")
-            if not carga_proc.empty and kg_totales_proc > 0:
-                fig_subp = px.bar(
-                    carga_proc.sort_values("Kg_Pendientes", ascending=False).head(10),
-                    x="Kg_Pendientes", y="Subproyecto", orientation='h',
-                    title=f"Top 10 Subproyectos con mayor cola en {proceso_seleccionado}"
-                )
-                fig_subp.update_layout(yaxis={'categoryorder':'total ascending'})
-                st.plotly_chart(fig_subp, use_container_width=True)
-            else:
-                st.info(f"No hay kilos pendientes en {proceso_seleccionado} para el horizonte seleccionado.")
+        matriz_edit_global = st.data_editor(
+            st.session_state.matriz_dotacion[["Proceso"] + semanas_matriz],
+            column_config=column_config_g,
+            hide_index=True,
+            use_container_width=True,
+            key="editor_global_nave"
+        )
+        st.session_state.matriz_dotacion.update(matriz_edit_global)
 
     # -------------------------------------------------------------
     # TAB 4: PRODUCTIVIDAD & AUDITORÍA
