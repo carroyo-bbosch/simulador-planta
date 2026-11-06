@@ -8,10 +8,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 
-st.set_page_config(page_title="Reporte Operaciones - Kilos Disponibles en Piso", layout="wide")
+st.set_page_config(page_title="Reporte Operaciones - Control de Planta", layout="wide")
 
 # -------------------------------------------------------------
-# 0. CONFIGURACIÓN DE LOS 11 PROCESOS Y PRECEDENCIAS DIRECTAS
+# 0. CONFIGURACIÓN DE LOS 11 PROCESOS Y PRECEDENCIAS
 # -------------------------------------------------------------
 PROCESOS_LINEA = [
     "Ingeniería",
@@ -27,7 +27,6 @@ PROCESOS_LINEA = [
     "Embalaje"
 ]
 
-# Predecesores físicos inmediatos para calcular el material entregado
 PREDECESORES_DIRECTOS = {
     "Ingeniería": [],
     "CNCL": ["Ingeniería"],
@@ -35,7 +34,7 @@ PREDECESORES_DIRECTOS = {
     "Talón": ["CNCL"],
     "DoblezL": ["Talón"],
     "Perforado": ["DoblezL"],
-    "Armado Soldadura": ["Perforado", "CNCPL"], # Requiere ambos
+    "Armado Soldadura": ["Perforado", "CNCPL"],
     "Soldadura": ["Armado Soldadura"],
     "Fabricado": ["Soldadura"],
     "Galvanizado": ["Fabricado"],
@@ -142,7 +141,7 @@ st.sidebar.header("⚙️ Parámetros de Operación")
 horas_sem = st.sidebar.number_input("Horas turno / semana por operario", value=44, step=1)
 eficiencia = st.sidebar.slider("Eficiencia Operativa / OEE (%)", 50, 100, 85) / 100.0
 
-st.title("📋 Reporte de Operaciones: Kilos Disponibles en Piso por Proceso")
+st.title("🏭 Reporte de Operaciones: Avance & Carga de Planta")
 
 if st.button("🔄 Refrescar Datos Smartsheet"):
     st.cache_data.clear()
@@ -220,10 +219,10 @@ try:
         st.session_state.matriz_dotacion = pd.DataFrame(datos_matriz)
 
     # -------------------------------------------------------------
-    # 3. MOTOR ANALÍTICO: CÁLCULO DE KILOS DISPONIBLES EN COLA
+    # 3. MOTOR ANALÍTICO: CÁLCULO DE KILOS DISPONIBLES EN PISO
     # -------------------------------------------------------------
     datos_lotes_calculados = []
-    registros_demanda = []
+    totales_pendientes_fabricar = {p: 0.0 for p in PROCESOS_LINEA}
 
     for subp in subproyectos_horizonte:
         lotes_subp = df_backlog_horizonte[df_backlog_horizonte[col_sub_backlog] == subp].sort_values("Fecha_DT")
@@ -234,7 +233,6 @@ try:
         kg_orden_subp = info_ing["Orden"]
         kg_carg_subp = info_ing["Cargados"]
 
-        # Pool de avance real para consumo FIFO por lote
         av_disponible = {}
         req_total_subp = {}
         for proc in PROCESOS_LINEA:
@@ -249,7 +247,7 @@ try:
             kg_orden_lote = kg_orden_subp * factor
             kg_carg_lote = kg_carg_subp * factor
 
-            # 1. Determinar el avance de cada proceso en este lote según FIFO
+            # 1. Determinar el avance FIFO por proceso
             av_lote_por_proc = {}
             req_lote_por_proc = {}
             for proc in PROCESOS_LINEA:
@@ -260,35 +258,30 @@ try:
                 req_lote_por_proc[proc] = req_lp
                 av_lote_por_proc[proc] = av_lp
 
-            # 2. Calcular los KILOS FÍSICAMENTE DISPONIBLES para cada estación
+            # 2. Calcular Kilos Disponibles en Piso y Kilos Pendientes Totales
             detalle_procesos_lote = {}
             for proc in PROCESOS_LINEA:
                 req_lp = req_lote_por_proc[proc]
                 av_lp = av_lote_por_proc[proc]
                 pend_total_lp = max(0.0, req_lp - av_lp)
+                
+                # Sumar a los pendientes totales requeridos para el programa
+                totales_pendientes_fabricar[proc] += pend_total_lp
 
                 predecesores = PREDECESORES_DIRECTOS.get(proc, [])
 
-                if proc == "Ingeniería":
-                    # Para ingeniería, lo disponible es todo lo que falta por cargar
+                if proc == "Ingeniería" or not predecesores:
                     kg_disp = pend_total_lp
-                    kg_liberados_pred = req_lp
-                elif not predecesores:
-                    kg_disp = pend_total_lp
-                    kg_liberados_pred = req_lp
                 else:
-                    # Lo liberado por los predecesores para este lote específico
                     if len(predecesores) == 1:
                         kg_liberados_pred = av_lote_por_proc.get(predecesores[0], 0.0)
                     else:
-                        # Para Armado Soldadura (mínimo entre Perforado y CNCPL)
                         kg_liberados_pred = min([av_lote_por_proc.get(pred, 0.0) for pred in predecesores])
 
-                    # Kilos en piso = Lo liberado por el predecesor menos lo que esta estación ya procesó
                     kg_disp = max(0.0, kg_liberados_pred - av_lp)
-                    kg_disp = min(kg_disp, pend_total_lp) # No puede superar lo que falta
+                    kg_disp = min(kg_disp, pend_total_lp)
 
-                # Clasificación y Semáforos
+                # Clasificación de color
                 if req_lp == 0:
                     estado = "NA"
                     color = "#f1f3f4"
@@ -300,9 +293,8 @@ try:
                 elif kg_disp > 0:
                     estado = "DISPONIBLE"
                     color = "#fff2cc" if av_lp > 0 else "#ffe599"
-                    hover = f"{kg_disp:,.0f} kg disponibles en piso (Faltan {pend_total_lp:,.0f} kg en total para el lote)"
+                    hover = f"{kg_disp:,.0f} kg disponibles en piso (Faltan {pend_total_lp:,.0f} kg en total)"
                 else:
-                    # Faltan kilos para el lote, pero en la estación hay 0 kg disponibles porque el anterior no ha liberado
                     estado = "SIN_MATERIAL"
                     color = "#f4c7c3"
                     nombres_pred = ", ".join(predecesores)
@@ -315,16 +307,6 @@ try:
                     "estado": estado,
                     "hover": hover
                 }
-
-                registros_demanda.append({
-                    "ID_Lote": str(lote[col_id_fila]),
-                    "Subproyecto": subp,
-                    "Fecha_DT": lote["Fecha_DT"],
-                    "Mes_Entrega": lote["Mes_Entrega"],
-                    "Semana_Entrega": lote["Semana_Entrega"],
-                    "Proceso": proc,
-                    "Kg_Disponibles": kg_disp
-                })
 
             datos_lotes_calculados.append({
                 "ID_Lote": str(lote[col_id_fila]),
@@ -339,26 +321,99 @@ try:
                 "Procesos": detalle_procesos_lote
             })
 
-    df_demanda_detallada = pd.DataFrame(registros_demanda)
-
     # -------------------------------------------------------------
     # 4. PESTAÑAS DE TRABAJO
     # -------------------------------------------------------------
-    tab_reporte, tab_torre_control, tab_sim_proceso, tab_matriz_global = st.tabs([
-        "📊 Matriz: Kilos Disponibles en Piso",
-        "🚀 Torre de Control & Despachos",
+    tab_reporte, tab_sim_proceso, tab_matriz_global = st.tabs([
+        "📋 Control Integral: Programa, Carga & Lotes",
         "🎯 Simulador por Estación",
         "🗓️ Matriz Global (Dotación)"
     ])
 
     # -------------------------------------------------------------
-    # TAB 1: REPORTE DE KILOS DISPONIBLES EN PISO
+    # TAB 1: ESTRUCTURA LINEAL SOLICITADA
     # -------------------------------------------------------------
     with tab_reporte:
-        st.markdown(f"### 📋 Kilos Disponibles para Procesar en Piso (Desde {mes_seleccionado})")
-        st.caption("Muestra exclusivamente los kilos que **ya fueron liberados por el proceso anterior** y están esperando ser trabajados en cada máquina.")
+        # =========================================================
+        # 1. PARTE SUPERIOR: PROGRAMA DE DESPACHO
+        # =========================================================
+        st.markdown(f"### 📅 Programa de Despacho (Desde {mes_seleccionado})")
+        
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            df_mes = df_backlog_horizonte.groupby("Mes_Entrega", as_index=False)["Kg_Prog_Num"].sum().sort_values("Mes_Entrega")
+            df_mes["Ton_Prog"] = (df_mes["Kg_Prog_Num"] / 1000.0).round(1)
+            fig_mes = px.bar(
+                df_mes, x="Mes_Entrega", y="Ton_Prog", text_auto='.1f',
+                title="Toneladas Programadas por Mes de Salida",
+                labels={"Mes_Entrega": "Mes", "Ton_Prog": "Toneladas (t)"}
+            )
+            fig_mes.update_traces(marker_color='#102a45')
+            fig_mes.update_layout(height=280, margin=dict(l=10, r=10, t=35, b=10))
+            st.plotly_chart(fig_mes, use_container_width=True)
 
-        # Leyenda visual adaptada
+        with col_m2:
+            df_sem = df_backlog_horizonte.groupby("Semana_Entrega", as_index=False)["Kg_Prog_Num"].sum().sort_values("Semana_Entrega")
+            df_sem["Ton_Prog"] = (df_sem["Kg_Prog_Num"] / 1000.0).round(1)
+            fig_sem = px.bar(
+                df_sem, x="Semana_Entrega", y="Ton_Prog", text_auto='.1f',
+                title="Toneladas Programadas por Semana de Salida",
+                labels={"Semana_Entrega": "Semana (Año-Sem)", "Ton_Prog": "Toneladas (t)"}
+            )
+            fig_sem.update_traces(marker_color='#1d4e89')
+            fig_sem.update_layout(height=280, margin=dict(l=10, r=10, t=35, b=10))
+            st.plotly_chart(fig_sem, use_container_width=True)
+
+        st.markdown("---")
+
+        # =========================================================
+        # 2. PARTE MEDIA: GRÁFICO RESUMEN DE TONELADAS PENDIENTES
+        # =========================================================
+        st.markdown("### 📊 Toneladas Pendientes por Proceso")
+        st.caption("Carga neta de trabajo pendiente en cada estación requerida para dar cumplimiento al programa de despacho superior.")
+
+        df_resumen_ton = pd.DataFrame([
+            {"Proceso": p, "Toneladas": round(totales_pendientes_fabricar[p] / 1000.0, 1)}
+            for p in PROCESOS_LINEA
+        ])
+
+        fig_ton = go.Figure()
+        fig_ton.add_trace(go.Bar(
+            y=df_resumen_ton["Proceso"],
+            x=df_resumen_ton["Toneladas"],
+            orientation='h',
+            marker=dict(color='#102a45'), # Azul marino idéntico al reporte
+            text=[f"{v:,.1f} t" if v > 0 else "0.0 t" for v in df_resumen_ton["Toneladas"]],
+            textposition='outside',
+            name="Pendiente"
+        ))
+
+        fig_ton.update_layout(
+            height=420,
+            margin=dict(l=20, r=50, t=20, b=20),
+            plot_bgcolor='white',
+            xaxis=dict(
+                title="Toneladas Métricas (t)",
+                showgrid=True,
+                gridcolor='#f0f0f0',
+                zeroline=False
+            ),
+            yaxis=dict(
+                autorange="reversed", # Mantiene Ingeniería arriba y Embalaje abajo
+                showgrid=False
+            )
+        )
+        st.plotly_chart(fig_ton, use_container_width=True)
+
+        st.markdown("---")
+
+        # =========================================================
+        # 3. PARTE INFERIOR: MATRIZ DETALLADA POR LOTE DE DESPACHO
+        # =========================================================
+        st.markdown(f"### 📋 Detalle de Kilos Disponibles en Piso por Lote de Despacho")
+        st.caption("Muestra los kilos listos en máquina entregados por la estación anterior. La fila final resume la cola disponible acumulada.")
+
+        # Leyenda visual
         st.markdown("""
         <div style="display:flex; gap:12px; margin-bottom:10px; font-size:12px; flex-wrap:wrap;">
             <span><span style="background-color:#b7e1cd; padding:2px 7px; border-radius:3px; font-weight:bold;">0</span> Completado al 100%</span>
@@ -439,7 +494,7 @@ try:
 <meta charset="utf-8">
 <style>
 body {{ margin:0; padding:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
-.tabla-container {{ overflow:auto; max-height:620px; border:1px solid #ccc; border-radius:4px; }}
+.tabla-container {{ overflow:auto; max-height:580px; border:1px solid #ccc; border-radius:4px; }}
 table {{ width:100%; border-collapse:collapse; font-size:12px; }}
 thead th {{ background-color:#fce5cd; color:#333; position:sticky; top:0; z-index:5; border-bottom:2px solid #ccc; }}
 tfoot td {{ background-color:#e8eaed; position:sticky; bottom:0; z-index:5; border-top:2px solid #999; font-weight:bold; }}
@@ -478,27 +533,10 @@ tfoot td {{ background-color:#e8eaed; position:sticky; bottom:0; z-index:5; bord
 </body>
 </html>
 """
-            components.html(tabla_completa, height=640, scrolling=False)
+            components.html(tabla_completa, height=600, scrolling=False)
 
     # -------------------------------------------------------------
-    # TAB 2: TORRE DE CONTROL & DESPACHOS
-    # -------------------------------------------------------------
-    with tab_torre_control:
-        st.markdown(f"### 📅 Programa de Despacho (Desde {mes_seleccionado})")
-        c_mes, c_sem = st.columns(2)
-        with c_mes:
-            df_mes = df_backlog_horizonte.groupby("Mes_Entrega", as_index=False)["Kg_Prog_Num"].sum().sort_values("Mes_Entrega")
-            fig_mes = px.bar(df_mes, x="Mes_Entrega", y="Kg_Prog_Num", text_auto='.2s', title="Kilos Totales por Mes")
-            fig_mes.update_traces(marker_color='#1f77b4')
-            st.plotly_chart(fig_mes, use_container_width=True)
-        with c_sem:
-            df_sem = df_backlog_horizonte.groupby("Semana_Entrega", as_index=False)["Kg_Prog_Num"].sum().sort_values("Semana_Entrega")
-            fig_sem = px.bar(df_sem, x="Semana_Entrega", y="Kg_Prog_Num", text_auto='.2s', title="Kilos Totales por Semana")
-            fig_sem.update_traces(marker_color='#2ca02c')
-            st.plotly_chart(fig_sem, use_container_width=True)
-
-    # -------------------------------------------------------------
-    # TAB 3: SIMULADOR POR ESTACIÓN (CARGA VS CAPACIDAD)
+    # TAB 2: SIMULADOR POR ESTACIÓN
     # -------------------------------------------------------------
     with tab_sim_proceso:
         st.markdown("### 🎯 Balanceo de Capacidad & Simulación por Estación")
@@ -513,7 +551,7 @@ tfoot td {{ background-color:#e8eaed; position:sticky; bottom:0; z-index:5; bord
             st.session_state.matriz_dotacion.loc[st.session_state.matriz_dotacion["Proceso"] == proceso_foco, col_sem] = fila_editada[col_sem].values[0]
 
     # -------------------------------------------------------------
-    # TAB 4: MATRIZ GLOBAL (DOTACIÓN 11 PROCESOS)
+    # TAB 3: MATRIZ GLOBAL (DOTACIÓN 11 PROCESOS)
     # -------------------------------------------------------------
     with tab_matriz_global:
         st.markdown(f"### 🗓️ Matriz Completa de Dotación (11 Procesos $\\times$ Semanas)")
