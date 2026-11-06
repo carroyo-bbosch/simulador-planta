@@ -2,12 +2,36 @@ import streamlit as st
 import pandas as pd
 import smartsheet
 import re
+import unicodedata
 import plotly.express as px
 
-st.set_page_config(page_title="Simulador de Planta - Carga Activa", layout="wide")
+st.set_page_config(page_title="Simulador de Capacidad - Planta", layout="wide")
 
 # -------------------------------------------------------------
-# 1. FUNCIONES DE CONEXIÓN Y NORMALIZACIÓN
+# 0. DEFINICIÓN OFICIAL DE LA LÍNEA DE PRODUCCIÓN (12 PROCESOS)
+# -------------------------------------------------------------
+PROCESOS_LINEA = [
+    "Ingeniería",
+    "Oficina Técnica",
+    "CNCL",
+    "CNCPL",
+    "Talón",
+    "DoblezL",
+    "Perforado",
+    "Armado Soldadura",
+    "Soldadura",
+    "Fabricado",
+    "Galvanizado",
+    "Embalaje"
+]
+
+def limpiar_texto(txt):
+    if not isinstance(txt, str): return ""
+    txt = unicodedata.normalize('NFKD', txt).encode('ASCII', 'ignore').decode('utf-8')
+    return re.sub(r'[^a-zA-Z0-9]', '', txt).lower()
+
+# -------------------------------------------------------------
+# 1. CONEXIÓN A SMARTSHEET Y NORMALIZACIÓN
 # -------------------------------------------------------------
 @st.cache_data(ttl=300)
 def cargar_hoja(sheet_id):
@@ -21,24 +45,23 @@ def normalizar_procesos(df_proc):
     cols = df_proc.columns.tolist()
     col_subproj = next((c for c in cols if "sub-proyecto" in c.lower() or "subproyecto" in c.lower()), None)
     col_cargados = next((c for c in cols if "cargados" in c.lower()), None)
-    
-    procesos_detectados = set()
-    mapa_cols = {} 
+
+    # Ordenar de mayor a menor longitud para que 'Armado Soldadura' se evalúe antes que 'Soldadura'
+    procesos_busqueda = sorted(PROCESOS_LINEA, key=len, reverse=True)
+    mapa_cols = {p: {} for p in PROCESOS_LINEA}
 
     for c in cols:
-        c_low = c.lower().strip()
-        if c_low.startswith("estimado"):
-            proc = re.sub(r"^estimados?\s*", "", c, flags=re.IGNORECASE).strip()
-            procesos_detectados.add(proc)
-            mapa_cols.setdefault(proc, {})['estimado'] = c
-        elif "kilos lanzados" in c_low:
-            proc = re.sub(r"^kilos\s+lanzados\s*", "", c, flags=re.IGNORECASE).strip()
-            procesos_detectados.add(proc)
-            mapa_cols.setdefault(proc, {})['lanzado'] = c
-        elif c_low.startswith("kilos ") and not any(k in c_low for k in ["lanzados", "orden", "cargados"]):
-            proc = re.sub(r"^kilos\s+", "", c, flags=re.IGNORECASE).strip()
-            procesos_detectados.add(proc)
-            mapa_cols.setdefault(proc, {})['avance'] = c
+        c_clean = limpiar_texto(c)
+        for proc in procesos_busqueda:
+            p_clean = limpiar_texto(proc)
+            if p_clean in c_clean:
+                if c_clean.startswith("estimado"):
+                    mapa_cols[proc]['estimado'] = c
+                elif "lanzado" in c_clean:
+                    mapa_cols[proc]['lanzado'] = c
+                elif c_clean.startswith("kilo") and not any(x in c_clean for x in ["lanzado", "cargado", "orden"]):
+                    mapa_cols[proc]['avance'] = c
+                break
 
     registros = []
     for _, fila in df_proc.iterrows():
@@ -49,10 +72,10 @@ def normalizar_procesos(df_proc):
         kilos_cargados = pd.to_numeric(fila.get(col_cargados, 0), errors='coerce') or 0
         es_estimado = (kilos_cargados <= 0)
         
-        for proc in procesos_detectados:
-            col_est = mapa_cols.get(proc, {}).get('estimado')
-            col_lanz = mapa_cols.get(proc, {}).get('lanzado')
-            col_av = mapa_cols.get(proc, {}).get('avance')
+        for proc in PROCESOS_LINEA:
+            col_est = mapa_cols[proc].get('estimado')
+            col_lanz = mapa_cols[proc].get('lanzado')
+            col_av = mapa_cols[proc].get('avance')
             
             kg_est = pd.to_numeric(fila.get(col_est, 0), errors='coerce') or 0 if col_est else 0
             kg_lanz = pd.to_numeric(fila.get(col_lanz, 0), errors='coerce') or 0 if col_lanz else 0
@@ -71,55 +94,65 @@ def normalizar_procesos(df_proc):
     return pd.DataFrame(registros)
 
 # -------------------------------------------------------------
-# 2. CONTROLES LATERALES (DOTACIÓN)
+# 2. CONTROLES LATERALES (DOTACIÓN Y SIMULACIÓN)
 # -------------------------------------------------------------
-st.sidebar.header("⚙️ Jornada Laboral")
+st.sidebar.header("⚙️ Jornada y Rendimiento")
 horas_sem = st.sidebar.number_input("Horas laborables / semana", value=44, step=1)
-eficiencia = st.sidebar.slider("Eficiencia (OEE) %", 50, 100, 85) / 100.0
+eficiencia = st.sidebar.slider("Eficiencia Operativa (OEE) %", 50, 100, 85) / 100.0
 
-st.sidebar.header("👷 Distribución de Operarios")
-mod_cnc = st.sidebar.slider("Corte CNC", 0, 30, 6)
-mod_sold = st.sidebar.slider("Armado / Soldadura", 0, 40, 14)
-mod_galv = st.sidebar.slider("Galvanizado", 0, 30, 8)
-
-dotacion = {
-    "CNC": mod_cnc,
-    "Soldadura": mod_sold,
-    "Galvanizado": mod_galv
+st.sidebar.header("👷 Dotación por Proceso")
+dotacion_default = {
+    "Ingeniería": 2, "Oficina Técnica": 2, "CNCL": 4, "CNCPL": 4, 
+    "Talón": 2, "DoblezL": 2, "Perforado": 3, "Armado Soldadura": 8, 
+    "Soldadura": 8, "Fabricado": 2, "Galvanizado": 8, "Embalaje": 4
 }
 
-# Ratios estándar de productividad (kg/HH)
-ratios = {
-    "CNC": 120.0,
-    "Soldadura": 45.0,
-    "Galvanizado": 160.0
-}
+dotacion = {}
+with st.sidebar.expander("Configurar Operarios Asignados", expanded=False):
+    for proc in PROCESOS_LINEA:
+        dotacion[proc] = st.number_input(
+            f"{proc}", 
+            min_value=0, 
+            max_value=50, 
+            value=dotacion_default.get(proc, 2), 
+            step=1
+        )
+
+st.sidebar.info(f"**Total Mano de Obra Activa:** {sum(dotacion.values())} operarios")
+
+# Módulo What-If: Evaluar Proyecto Nuevo
+st.sidebar.markdown("---")
+st.sidebar.header("🧪 Simulación Proyecto Nuevo")
+simular_activo = st.sidebar.checkbox("¿Evaluar nuevo proyecto?")
+nuevo_kg = 0
+nuevo_nombre = "Proyecto Simulado"
+if simular_activo:
+    nuevo_nombre = st.sidebar.text_input("Nombre de Referencia", value="Subestación 220kV")
+    nuevo_kg = st.sidebar.number_input("Kilos a Inyectar", value=35000, step=5000)
 
 # -------------------------------------------------------------
-# 3. EJECUCIÓN PRINCIPAL
+# 3. EJECUCIÓN DEL MODELO
 # -------------------------------------------------------------
-st.title("🏭 Monitor de Carga Viva y Simulación")
+st.title("🏭 Simulador de Línea: Torres de Alta Tensión y Subestaciones")
 
-if st.button("🔄 Refrescar Datos de Smartsheet"):
+if st.button("🔄 Refrescar Datos Smartsheet"):
     st.cache_data.clear()
     st.rerun()
 
 try:
-    with st.spinner("Descargando y filtrando backlog activo..."):
+    with st.spinner("Sincronizando información de planta..."):
         df_backlog_raw = cargar_hoja(st.secrets["SHEET_ID_BACKLOG"])
         df_procesos_raw = cargar_hoja(st.secrets["SHEET_ID_PROCESOS"])
-        
+        df_prod_raw = cargar_hoja(st.secrets["SHEET_ID_PRODUCTIVIDAD"])
+
+    # 1. Filtro estricto de Backlog: Fecha programada activa y despacho real en blanco
     cols_backlog = df_backlog_raw.columns.tolist()
-    
-    # Detección de columnas clave en Backlog
     col_sub_backlog = next((c for c in cols_backlog if "sub-proyecto" in c.lower() or "subproyecto" in c.lower()), None)
     col_fecha_prog = next((c for c in cols_backlog if "programad" in c.lower() and "fecha" in c.lower()), None)
     if not col_fecha_prog:
         col_fecha_prog = next((c for c in cols_backlog if "fecha" in c.lower()), None)
-        
     col_despacho_real = next((c for c in cols_backlog if "despacho" in c.lower() and ("real" in c.lower() or "fecha" in c.lower())), None)
 
-    # Filtrar solo lotes activos (con fecha programada y sin despacho real)
     valido_fecha_prog = (
         df_backlog_raw[col_fecha_prog].notna() & 
         (df_backlog_raw[col_fecha_prog].astype(str).str.strip() != "") & 
@@ -136,32 +169,45 @@ try:
     else:
         df_backlog_activo = df_backlog_raw[valido_fecha_prog].copy()
 
+    df_backlog_activo["Fecha_DT"] = pd.to_datetime(df_backlog_activo[col_fecha_prog], errors='coerce')
+    df_backlog_activo["Semana_Entrega"] = df_backlog_activo["Fecha_DT"].dt.strftime("%Y-Sem%U")
     subproyectos_vivos = df_backlog_activo[col_sub_backlog].dropna().astype(str).str.strip().unique()
 
-    # Normalizar hoja de procesos y filtrar solo los que siguen en fabricación
+    # 2. Normalizar procesos y filtrar carga viva
     df_procesos = normalizar_procesos(df_procesos_raw)
     df_carga = df_procesos[df_procesos["Subproyecto"].isin(subproyectos_vivos)].copy()
 
-    # Cálculo de HH Pendientes
-    def asignar_ratio(nombre_proceso):
-        for k, v in ratios.items():
-            if k.lower() in str(nombre_proceso).lower():
-                return v
-        return 100.0
+    # Inyección de proyecto simulado en toda la ruta
+    if simular_activo and nuevo_kg > 0:
+        simulados = [{"Subproyecto": f"🧪 {nuevo_nombre}", "Proceso": p, "Kg_Pendientes": nuevo_kg} for p in PROCESOS_LINEA]
+        df_carga = pd.concat([df_carga, pd.DataFrame(simulados)], ignore_index=True)
 
-    df_carga["Productividad"] = df_carga["Proceso"].apply(asignar_ratio)
+    # 3. Cargar Productividad (kg/HH) desde la hoja oficial
+    col_prod_proc = next((c for c in df_prod_raw.columns if "proceso" in c.lower() and "simulador" in c.lower()), df_prod_raw.columns[0])
+    col_prod_kghh = next((c for c in df_prod_raw.columns if "kg" in c.lower() and "hh" in c.lower()), df_prod_raw.columns[1])
+    
+    ratios_productividad = {}
+    for _, r in df_prod_raw.iterrows():
+        proc_str = limpiar_texto(str(r[col_prod_proc]))
+        kghh_val = pd.to_numeric(r[col_prod_kghh], errors='coerce')
+        if pd.notna(kghh_val) and kghh_val > 0:
+            for p_oficial in PROCESOS_LINEA:
+                if limpiar_texto(p_oficial) in proc_str:
+                    ratios_productividad[p_oficial] = float(kghh_val)
+
+    # Asignar ratio con fallback por defecto de 80 kg/HH si alguno no está cargado
+    df_carga["Productividad"] = df_carga["Proceso"].map(lambda p: ratios_productividad.get(p, 80.0))
     df_carga["HH_Pendientes"] = df_carga["Kg_Pendientes"] / df_carga["Productividad"]
 
-    # Agrupación por Proceso (sintaxis compacta de una sola línea)
+    # 4. Consolidar Resumen respetando el orden secuencial de la línea
     resumen = df_carga.groupby("Proceso", as_index=False)[["Kg_Pendientes", "HH_Pendientes"]].sum()
+    
+    # Asegurar que los 12 procesos existan en la tabla aunque tengan 0 carga
+    df_base = pd.DataFrame({"Proceso": PROCESOS_LINEA})
+    resumen = df_base.merge(resumen, on="Proceso", how="left").fillna(0)
 
-    def asignar_operarios(nombre_proceso):
-        for k, v in dotacion.items():
-            if k.lower() in str(nombre_proceso).lower():
-                return v
-        return 0
-
-    resumen["Operarios"] = resumen["Proceso"].apply(asignar_operarios)
+    resumen["Operarios"] = resumen["Proceso"].map(dotacion)
+    resumen["Productividad_KgHH"] = resumen["Proceso"].map(lambda p: ratios_productividad.get(p, 80.0))
     resumen["Capacidad_HH_Sem"] = resumen["Operarios"] * horas_sem * eficiencia
 
     def calc_semanas(row):
@@ -179,44 +225,75 @@ try:
             return "🔴 CUELLO DE BOTELLA"
         elif sat >= 80:
             return "🟡 CARGA ALTA"
-        return "🟢 OK"
+        return "🟢 FLUIDO"
 
-    resumen["Diagnostico"] = resumen["Saturacion_%"].apply(diagnostico)
+    resumen["Estado"] = resumen["Saturacion_%"].apply(diagnostico)
+
+    # Convertir a categoría ordenada para asegurar el flujo secuencial en gráficos
+    resumen["Proceso"] = pd.Categorical(resumen["Proceso"], categories=PROCESOS_LINEA, ordered=True)
+    resumen = resumen.sort_values("Proceso")
 
     # -------------------------------------------------------------
-    # 4. VISUALIZACIÓN
+    # 4. VISUALIZACIÓN EN PANTALLA
     # -------------------------------------------------------------
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Kilos Reales en Cola", f"{df_carga['Kg_Pendientes'].sum():,.0f} kg")
-    m2.metric("Lotes / Despachos Pendientes", len(df_backlog_activo))
-    m3.metric("Subproyectos Activos en Taller", len(subproyectos_vivos))
+    tab1, tab2, tab3 = st.tabs([
+        "📊 Balance de Línea (12 Procesos)", 
+        "📅 Calendario de Despachos", 
+        "📋 Tabla de Ratios y Auditoría"
+    ])
 
-    st.markdown("---")
-    
-    col_izq, col_der = st.columns([3, 2])
-    with col_izq:
-        st.markdown("### 📊 Demanda (HH) vs Capacidad Semanal")
-        fig = px.bar(
-            resumen[resumen["Operarios"] > 0],
+    with tab1:
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Kilos Totales en Proceso", f"{df_carga['Kg_Pendientes'].sum():,.0f} kg")
+        m2.metric("HH Pendientes de Taller", f"{df_carga['HH_Pendientes'].sum():,.0f} HH")
+        m3.metric("Lotes en Fabricación", len(df_backlog_activo))
+
+        st.markdown("### Carga Pendiente vs Capacidad Semanal Disponible")
+        fig_bar = px.bar(
+            resumen,
             x="Proceso",
             y=["HH_Pendientes", "Capacidad_HH_Sem"],
             barmode="group",
-            labels={"value": "Horas Hombre", "variable": "Indicador"}
+            labels={"value": "Horas Hombre (HH)", "variable": "Indicador"},
+            category_orders={"Proceso": PROCESOS_LINEA}
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig_bar, use_container_width=True)
 
-    with col_der:
-        st.markdown("### 📌 Filtros de Auditoría")
-        st.info(f"**Columna Fecha Programada:** `{col_fecha_prog}`")
-        st.info(f"**Columna Despacho Real:** `{col_despacho_real if col_despacho_real else 'No detectada'}`")
-        st.write(f"Filas totales Backlog: **{len(df_backlog_raw)}**")
-        st.write(f"Filas activas a fabricar: **{len(df_backlog_activo)}**")
+        st.markdown("### Detalle Operativo por Estación")
+        st.dataframe(
+            resumen[["Proceso", "Operarios", "Productividad_KgHH", "Kg_Pendientes", "Capacidad_HH_Sem", "Semanas_Cola", "Estado"]],
+            use_container_width=True
+        )
 
-    st.markdown("### 📋 Diagnóstico por Estación de Trabajo")
-    st.dataframe(
-        resumen[["Proceso", "Operarios", "Kg_Pendientes", "Capacidad_HH_Sem", "Semanas_Cola", "Diagnostico"]], 
-        use_container_width=True
-    )
+    with tab2:
+        st.markdown("### Distribución de Despachos por Semana")
+        col_kg_prog = next((c for c in cols_backlog if "kilos" in c.lower() and "programad" in c.lower()), None)
+        if col_kg_prog:
+            df_backlog_activo["Kg_Prog_Num"] = pd.to_numeric(df_backlog_activo[col_kg_prog], errors='coerce').fillna(0)
+            resumen_semanal = df_backlog_activo.groupby("Semana_Entrega", as_index=False)["Kg_Prog_Num"].sum().sort_values("Semana_Entrega")
+            
+            fig_sem = px.bar(
+                resumen_semanal, 
+                x="Semana_Entrega", 
+                y="Kg_Prog_Num",
+                labels={"Kg_Prog_Num": "Kilos Programados", "Semana_Entrega": "Semana Calendario"},
+                title="Kilos a Entregar por Semana de Salida"
+            )
+            st.plotly_chart(fig_sem, use_container_width=True)
+
+        st.dataframe(
+            df_backlog_activo[[col_sub_backlog, col_fecha_prog, col_kg_prog, "Semana_Entrega"]].sort_values(by=col_fecha_prog),
+            use_container_width=True
+        )
+
+    with tab3:
+        st.markdown("### Ratios de Productividad Detectados (`procesos simulador` / `Kg/hh`)")
+        df_prod_show = pd.DataFrame([
+            {"Proceso": p, "Kg/HH": ratios_productividad.get(p, "80.0 (Fallback)")}
+            for p in PROCESOS_LINEA
+        ])
+        st.dataframe(df_prod_show, use_container_width=True)
+        st.caption(f"Columnas detectadas en la hoja: `{col_prod_proc}` y `{col_prod_kghh}`")
 
 except Exception as e:
-    st.error(f"Error procesando la información: {e}")
+    st.error(f"Error procesando los datos: {e}")
