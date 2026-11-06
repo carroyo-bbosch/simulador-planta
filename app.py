@@ -27,7 +27,6 @@ PROCESOS_LINEA = [
     "Embalaje"
 ]
 
-# Compuertas de precedencia: CNCL y CNCPL dependen directamente de Ingeniería
 COMPUERTAS_PROCESO = {
     "Ingeniería": [],
     "CNCL": [("Ingeniería", 0.50)],
@@ -70,7 +69,6 @@ def normalizar_procesos(df_proc):
     col_cargados = next((c for c in cols if "cargados" in c.lower()), None)
     col_orden = next((c for c in cols if "orden de proceder" in c.lower()), None)
 
-    # Buscar columnas para los procesos de taller (excluyendo Ingeniería que se alimenta de cargados)
     procesos_taller = [p for p in PROCESOS_LINEA if p != "Ingeniería"]
     procesos_busqueda = sorted(procesos_taller, key=len, reverse=True)
     mapa_cols = {p: {} for p in procesos_taller}
@@ -99,7 +97,7 @@ def normalizar_procesos(df_proc):
         kilos_orden = pd.to_numeric(fila.get(col_orden, 0), errors='coerce') or 0
         datos_ingenieria[subproyecto] = {"Orden": kilos_orden, "Cargados": kilos_cargados}
 
-        # 1. Proceso de Ingeniería: Demanda = Orden de Proceder, Avance = Kilos Cargados
+        # 1. Ingeniería: Meta = Orden de proceder, Avance = Cargados
         kg_necesidad_ing = kilos_orden if kilos_orden > 0 else kilos_cargados
         kg_av_ing = kilos_cargados
         kg_pend_ing = max(0.0, kg_necesidad_ing - kg_av_ing)
@@ -112,7 +110,7 @@ def normalizar_procesos(df_proc):
             "Kg_Pendientes": kg_pend_ing
         })
 
-        # 2. Procesos de Taller: Conmutación Estimados vs Lanzados según Kilos Cargados
+        # 2. Procesos de Taller
         es_estimado = (kilos_cargados <= 0)
         for proc in procesos_taller:
             col_est = mapa_cols[proc].get('estimado')
@@ -210,7 +208,7 @@ try:
     df_carga, datos_ing = normalizar_procesos(df_procesos_raw)
     df_carga = df_carga[df_carga["Subproyecto"].isin(subproyectos_horizonte)].copy()
 
-    # Cargar Productividad (kg/HH)
+    # Productividad (kg/HH)
     col_prod_proc = next((c for c in df_prod_raw.columns if "proceso" in c.lower() and "simulador" in c.lower()), df_prod_raw.columns[0])
     col_prod_kghh = next((c for c in df_prod_raw.columns if "kg" in c.lower() and "hh" in c.lower()), df_prod_raw.columns[1])
     
@@ -223,7 +221,7 @@ try:
                 if limpiar_texto(p_oficial) in proc_str:
                     ratios_productividad[p_oficial] = float(kghh_val)
 
-    # Semanas para matriz
+    # Semanas horizonte para la matriz
     semanas_horizonte = sorted(df_backlog_horizonte["Semana_Entrega"].unique().tolist())
     semanas_matriz = semanas_horizonte[:14] if len(semanas_horizonte) >= 6 else semanas_horizonte + [f"Sem+{i:02d}" for i in range(1, 7 - len(semanas_horizonte))]
 
@@ -234,9 +232,8 @@ try:
         st.session_state.matriz_dotacion = pd.DataFrame(datos_matriz)
 
     # -------------------------------------------------------------
-    # 3. MOTOR DE CÁLCULO FIFO DE KILOS PENDIENTES POR LOTE
+    # 3. MOTOR DE CÁLCULO: DISTRIBUCIÓN PROPORCIONAL Y FIFO
     # -------------------------------------------------------------
-    # Diagnóstico a nivel subproyecto para determinar compuertas globales
     subp_global_status = {}
     for subp in subproyectos_horizonte:
         df_subp_p = df_carga[df_carga["Subproyecto"] == subp]
@@ -251,14 +248,19 @@ try:
                 avances[proc] = 1.0
         subp_global_status[subp] = avances
 
-    # Asignación FIFO de avance por lote cronológico
+    # Prorrateo de Kilos y consumo FIFO por lote
     datos_lotes_calculados = []
+    registros_demanda = []
+
     for subp in subproyectos_horizonte:
         lotes_subp = df_backlog_horizonte[df_backlog_horizonte[col_sub_backlog] == subp].sort_values("Fecha_DT")
         tot_prog_subp = lotes_subp["Kg_Prog_Num"].sum()
         df_subp_carga = df_carga[df_carga["Subproyecto"] == subp]
 
-        # Avance disponible por proceso para consumir FIFO
+        info_ing = datos_ing.get(subp, {"Orden": 0.0, "Cargados": 0.0})
+        kg_orden_subp = info_ing["Orden"]
+        kg_carg_subp = info_ing["Cargados"]
+
         av_disponible = {}
         req_total_subp = {}
         for proc in PROCESOS_LINEA:
@@ -269,16 +271,19 @@ try:
         for _, lote in lotes_subp.iterrows():
             kg_lote = lote["Kg_Prog_Num"]
             factor = (kg_lote / tot_prog_subp) if tot_prog_subp > 0 else (1.0 / len(lotes_subp))
-            
+
+            # Prorrateo de Orden de Proceder y Cargados para este lote
+            kg_orden_lote = kg_orden_subp * factor
+            kg_carg_lote = kg_carg_subp * factor
+
             detalle_procesos_lote = {}
             for proc in PROCESOS_LINEA:
                 req_lote_p = req_total_subp[proc] * factor
-                # Consumir FIFO
                 av_lote_p = min(req_lote_p, av_disponible[proc])
                 av_disponible[proc] -= av_lote_p
                 pend_lote_p = max(0.0, req_lote_p - av_lote_p)
 
-                # Evaluar semáforo de la celda
+                # Compuertas
                 av_global_subp = subp_global_status[subp]
                 predecesores = COMPUERTAS_PROCESO.get(proc, [])
                 bloqueado = False
@@ -316,14 +321,30 @@ try:
                     "hover": hover
                 }
 
+                registros_demanda.append({
+                    "ID_Lote": str(lote[col_id_fila]),
+                    "Subproyecto": subp,
+                    "Fecha_DT": lote["Fecha_DT"],
+                    "Mes_Entrega": lote["Mes_Entrega"],
+                    "Semana_Entrega": lote["Semana_Entrega"],
+                    "Proceso": proc,
+                    "Kg_Asignados": pend_lote_p
+                })
+
             datos_lotes_calculados.append({
                 "ID_Lote": str(lote[col_id_fila]),
                 "Subproyecto": subp,
                 "Fecha_DT": lote["Fecha_DT"],
                 "Fecha_Prog": lote["Fecha_DT"].strftime("%d/%m/%Y"),
                 "Kg_Lote": kg_lote,
+                "Kg_Orden": kg_orden_lote,
+                "Kg_Cargados": kg_carg_lote,
+                "Kg_Orden_Subp": kg_orden_subp,
+                "Kg_Carg_Subp": kg_carg_subp,
                 "Procesos": detalle_procesos_lote
             })
+
+    df_demanda_detallada = pd.DataFrame(registros_demanda)
 
     # -------------------------------------------------------------
     # 4. PESTAÑAS DE TRABAJO
@@ -340,9 +361,9 @@ try:
     # -------------------------------------------------------------
     with tab_reporte:
         st.markdown(f"### 📋 Kilos Faltantes por Fabricar (Desde {mes_seleccionado})")
-        st.caption(f"Lotes de despacho evaluados: **{len(datos_lotes_calculados)}**. Las celdas indican la cantidad exacta de kilos pendientes en cada proceso.")
+        st.caption(f"Lotes de despacho evaluados: **{len(datos_lotes_calculados)}**. Los kilos de Orden de Proceder y Cargados se encuentran distribuidos por lote.")
 
-        # Leyenda visual adaptada
+        # Leyenda visual
         st.markdown("""
         <div style="display:flex; gap:12px; margin-bottom:10px; font-size:12px; flex-wrap:wrap;">
             <span><span style="background-color:#b7e1cd; padding:2px 7px; border-radius:3px; font-weight:bold;">0</span> Terminado (0 kg pendientes)</span>
@@ -356,34 +377,36 @@ try:
         if not datos_lotes_calculados:
             st.warning("⚠️ No se encontraron lotes activos para mostrar.")
         else:
+            # Acumuladores de totales por columna
+            total_kg_despacho = sum(item["Kg_Lote"] for item in datos_lotes_calculados)
+            total_kg_orden = sum(item["Kg_Orden"] for item in datos_lotes_calculados)
+            total_kg_carg = sum(item["Kg_Cargados"] for item in datos_lotes_calculados)
+            totales_procesos = {p: sum(item["Procesos"][p]["pendientes"] for item in datos_lotes_calculados) for p in PROCESOS_LINEA}
+
             filas_html = []
             for idx, item in enumerate(datos_lotes_calculados):
                 subp = item["Subproyecto"]
                 id_lote = item["ID_Lote"]
                 f_prog = item["Fecha_Prog"]
                 kg_lote = item["Kg_Lote"]
+                kg_orden = item["Kg_Orden"]
+                kg_carg = item["Kg_Cargados"]
 
-                info_ing = datos_ing.get(subp, {"Orden": 0, "Cargados": 0})
-                kg_orden = info_ing["Orden"]
-                kg_carg = info_ing["Cargados"]
-
+                # Alerta 5% a nivel de subproyecto
                 alerta_ing = ""
-                if kg_orden > 0 and kg_carg > 0:
-                    dif_pct = abs(kg_carg - kg_orden) / kg_orden
+                if item["Kg_Orden_Subp"] > 0 and item["Kg_Carg_Subp"] > 0:
+                    dif_pct = abs(item["Kg_Carg_Subp"] - item["Kg_Orden_Subp"]) / item["Kg_Orden_Subp"]
                     if dif_pct > 0.05:
-                        alerta_ing = f' <span title="Diferencia mayor al 5% ({dif_pct*100:.1f}%)" style="cursor:help;">⚠️</span>'
+                        alerta_ing = f' <span title="Diferencia de subproyecto mayor al 5% ({dif_pct*100:.1f}%)" style="cursor:help;">⚠️</span>'
 
                 bg_fila = "#ffffff" if idx % 2 == 0 else "#fafafa"
-
                 celdas_proc = []
-                total_pend_lote = 0.0
 
                 for proc in PROCESOS_LINEA:
                     info_p = item["Procesos"][proc]
                     pend_kg = info_p["pendientes"]
                     color_bg = info_p["color"]
                     hover = info_p["hover"]
-                    total_pend_lote += pend_kg
 
                     if info_p["estado"] == "NA":
                         texto_celda = "-"
@@ -398,8 +421,6 @@ try:
                         f'<td title="{hover}" style="background-color:{color_bg}; padding:6px 4px; text-align:center; border-left:1px solid #e0e0e0; font-size:11px; font-weight:500;">{texto_celda}</td>'
                     )
 
-                color_total = "#b7e1cd" if total_pend_lote <= 0.1 else ("#fff2cc" if total_pend_lote < (kg_lote * 0.5) else "#f4c7c3")
-
                 fila_str = f"""<tr style="background-color:{bg_fila}; border-bottom:1px solid #eee;">
 <td style="padding:7px; text-align:left; font-weight:600; position:sticky; left:0; background-color:{bg_fila}; z-index:2; border-right:1px solid #ddd;">{subp}</td>
 <td style="padding:7px; text-align:left; position:sticky; left:135px; background-color:{bg_fila}; z-index:2; border-right:1px solid #ddd; color:#555;">{id_lote}</td>
@@ -408,11 +429,17 @@ try:
 <td style="padding:7px; text-align:right; color:#555;">{kg_orden:,.0f}</td>
 <td style="padding:7px; text-align:right; font-weight:500;">{kg_carg:,.0f}{alerta_ing}</td>
 {''.join(celdas_proc)}
-<td style="padding:7px; text-align:right; font-weight:bold; background-color:{color_total}; border-left:2px solid #bbb;">{total_pend_lote:,.0f} kg</td>
 </tr>"""
                 filas_html.append(fila_str)
 
+            # Encabezados de columnas
             encabezados_proc = "".join([f'<th style="padding:9px 5px; text-align:center; min-width:82px; border-left:1px solid #e0e0e0;">{p}</th>' for p in PROCESOS_LINEA])
+
+            # Celdas de totales del pie de tabla
+            totales_proc_tds = "".join([
+                f'<td style="padding:8px 5px; text-align:center; border-left:1px solid #ccc; font-weight:bold; background-color:#fff2cc; color:#111;">{totales_procesos[p]:,.0f}</td>'
+                for p in PROCESOS_LINEA
+            ])
 
             tabla_completa = f"""
 <!DOCTYPE html>
@@ -423,7 +450,8 @@ try:
 body {{ margin:0; padding:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
 .tabla-container {{ overflow:auto; max-height:620px; border:1px solid #ccc; border-radius:4px; }}
 table {{ width:100%; border-collapse:collapse; font-size:12px; }}
-th {{ background-color:#fce5cd; color:#333; position:sticky; top:0; z-index:5; border-bottom:2px solid #ccc; }}
+thead th {{ background-color:#fce5cd; color:#333; position:sticky; top:0; z-index:5; border-bottom:2px solid #ccc; }}
+tfoot td {{ background-color:#e8eaed; position:sticky; bottom:0; z-index:5; border-top:2px solid #999; font-weight:bold; }}
 </style>
 </head>
 <body>
@@ -438,12 +466,22 @@ th {{ background-color:#fce5cd; color:#333; position:sticky; top:0; z-index:5; b
 <th style="padding:9px 7px; text-align:right; min-width:105px;">Orden Proceder</th>
 <th style="padding:9px 7px; text-align:right; min-width:105px;">Kilos Cargados</th>
 {encabezados_proc}
-<th style="padding:9px 7px; text-align:right; min-width:105px; border-left:2px solid #bbb;">Pendiente Total</th>
 </tr>
 </thead>
 <tbody>
 {''.join(filas_html)}
 </tbody>
+<tfoot>
+<tr>
+<td style="padding:8px 7px; text-align:left; position:sticky; left:0; background-color:#e8eaed; z-index:6;">TOTAL PENDIENTE</td>
+<td style="padding:8px 7px; text-align:left; position:sticky; left:135px; background-color:#e8eaed; z-index:6;">-</td>
+<td style="padding:8px 7px; text-align:center;">-</td>
+<td style="padding:8px 7px; text-align:right;">{total_kg_despacho:,.0f}</td>
+<td style="padding:8px 7px; text-align:right;">{total_kg_orden:,.0f}</td>
+<td style="padding:8px 7px; text-align:right;">{total_kg_carg:,.0f}</td>
+{totales_proc_tds}
+</tr>
+</tfoot>
 </table>
 </div>
 </body>
@@ -473,7 +511,7 @@ th {{ background-color:#fce5cd; color:#333; position:sticky; top:0; z-index:5; b
     # -------------------------------------------------------------
     with tab_sim_proceso:
         st.markdown("### 🎯 Balanceo de Capacidad & Simulación por Estación")
-        proceso_foco = st.selectbox("Selecciona la estación a simular:", PROCESOS_LINEA, index=1) # Default CNCL
+        proceso_foco = st.selectbox("Selecciona la estación a simular:", PROCESOS_LINEA, index=1)
 
         st.markdown(f"#### 👷 Dotación Semanal en **{proceso_foco}** (Operarios)")
         df_fila_proc = st.session_state.matriz_dotacion[st.session_state.matriz_dotacion["Proceso"] == proceso_foco][semanas_matriz]
