@@ -8,10 +8,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 
-st.set_page_config(page_title="Reporte Operaciones - Kilos Pendientes", layout="wide")
+st.set_page_config(page_title="Reporte Operaciones - Kilos Disponibles en Piso", layout="wide")
 
 # -------------------------------------------------------------
-# 0. CONFIGURACIÓN DE LOS 11 PROCESOS (SIN OFICINA TÉCNICA)
+# 0. CONFIGURACIÓN DE LOS 11 PROCESOS Y PRECEDENCIAS DIRECTAS
 # -------------------------------------------------------------
 PROCESOS_LINEA = [
     "Ingeniería",
@@ -27,18 +27,19 @@ PROCESOS_LINEA = [
     "Embalaje"
 ]
 
-COMPUERTAS_PROCESO = {
+# Predecesores físicos inmediatos para calcular el material entregado
+PREDECESORES_DIRECTOS = {
     "Ingeniería": [],
-    "CNCL": [("Ingeniería", 0.50)],
-    "CNCPL": [("Ingeniería", 0.50)],
-    "Talón": [("CNCL", 0.25)],
-    "DoblezL": [("Talón", 0.10)],
-    "Perforado": [("DoblezL", 0.20)],
-    "Armado Soldadura": [("Perforado", 0.25), ("CNCPL", 0.25)],
-    "Soldadura": [("Armado Soldadura", 0.25)],
-    "Fabricado": [("Soldadura", 0.50)],
-    "Galvanizado": [("Fabricado", 0.80)],
-    "Embalaje": [("Galvanizado", 0.30)]
+    "CNCL": ["Ingeniería"],
+    "CNCPL": ["Ingeniería"],
+    "Talón": ["CNCL"],
+    "DoblezL": ["Talón"],
+    "Perforado": ["DoblezL"],
+    "Armado Soldadura": ["Perforado", "CNCPL"], # Requiere ambos
+    "Soldadura": ["Armado Soldadura"],
+    "Fabricado": ["Soldadura"],
+    "Galvanizado": ["Fabricado"],
+    "Embalaje": ["Galvanizado"]
 }
 
 DOTACION_BASE_DEFAULT = {
@@ -97,7 +98,7 @@ def normalizar_procesos(df_proc):
         kilos_orden = pd.to_numeric(fila.get(col_orden, 0), errors='coerce') or 0
         datos_ingenieria[subproyecto] = {"Orden": kilos_orden, "Cargados": kilos_cargados}
 
-        # 1. Ingeniería: Meta = Orden de proceder, Avance = Cargados
+        # 1. Ingeniería
         kg_necesidad_ing = kilos_orden if kilos_orden > 0 else kilos_cargados
         kg_av_ing = kilos_cargados
         kg_pend_ing = max(0.0, kg_necesidad_ing - kg_av_ing)
@@ -141,7 +142,7 @@ st.sidebar.header("⚙️ Parámetros de Operación")
 horas_sem = st.sidebar.number_input("Horas turno / semana por operario", value=44, step=1)
 eficiencia = st.sidebar.slider("Eficiencia Operativa / OEE (%)", 50, 100, 85) / 100.0
 
-st.title("📋 Reporte de Operaciones: Kilos Faltantes por Proceso")
+st.title("📋 Reporte de Operaciones: Kilos Disponibles en Piso por Proceso")
 
 if st.button("🔄 Refrescar Datos Smartsheet"):
     st.cache_data.clear()
@@ -204,22 +205,9 @@ try:
     df_backlog_horizonte = df_backlog_activo[df_backlog_activo["Mes_Entrega"] >= mes_seleccionado].copy()
     subproyectos_horizonte = df_backlog_horizonte[col_sub_backlog].dropna().astype(str).str.strip().unique()
 
-    # Normalizar procesos y datos comerciales
+    # Normalizar procesos
     df_carga, datos_ing = normalizar_procesos(df_procesos_raw)
     df_carga = df_carga[df_carga["Subproyecto"].isin(subproyectos_horizonte)].copy()
-
-    # Productividad (kg/HH)
-    col_prod_proc = next((c for c in df_prod_raw.columns if "proceso" in c.lower() and "simulador" in c.lower()), df_prod_raw.columns[0])
-    col_prod_kghh = next((c for c in df_prod_raw.columns if "kg" in c.lower() and "hh" in c.lower()), df_prod_raw.columns[1])
-    
-    ratios_productividad = {}
-    for _, r in df_prod_raw.iterrows():
-        proc_str = limpiar_texto(str(r[col_prod_proc]))
-        kghh_val = pd.to_numeric(r[col_prod_kghh], errors='coerce')
-        if pd.notna(kghh_val) and kghh_val > 0:
-            for p_oficial in PROCESOS_LINEA:
-                if limpiar_texto(p_oficial) in proc_str:
-                    ratios_productividad[p_oficial] = float(kghh_val)
 
     # Semanas horizonte para la matriz
     semanas_horizonte = sorted(df_backlog_horizonte["Semana_Entrega"].unique().tolist())
@@ -232,23 +220,8 @@ try:
         st.session_state.matriz_dotacion = pd.DataFrame(datos_matriz)
 
     # -------------------------------------------------------------
-    # 3. MOTOR DE CÁLCULO: DISTRIBUCIÓN PROPORCIONAL Y FIFO
+    # 3. MOTOR ANALÍTICO: CÁLCULO DE KILOS DISPONIBLES EN COLA
     # -------------------------------------------------------------
-    subp_global_status = {}
-    for subp in subproyectos_horizonte:
-        df_subp_p = df_carga[df_carga["Subproyecto"] == subp]
-        avances = {}
-        for proc in PROCESOS_LINEA:
-            fila = df_subp_p[df_subp_p["Proceso"] == proc]
-            if not fila.empty:
-                req = fila["Kg_Requeridos"].values[0]
-                av = fila["Kg_Avanzados"].values[0]
-                avances[proc] = (av / req) if req > 0 else 1.0
-            else:
-                avances[proc] = 1.0
-        subp_global_status[subp] = avances
-
-    # Prorrateo de Kilos y consumo FIFO por lote
     datos_lotes_calculados = []
     registros_demanda = []
 
@@ -261,6 +234,7 @@ try:
         kg_orden_subp = info_ing["Orden"]
         kg_carg_subp = info_ing["Cargados"]
 
+        # Pool de avance real para consumo FIFO por lote
         av_disponible = {}
         req_total_subp = {}
         for proc in PROCESOS_LINEA:
@@ -272,50 +246,71 @@ try:
             kg_lote = lote["Kg_Prog_Num"]
             factor = (kg_lote / tot_prog_subp) if tot_prog_subp > 0 else (1.0 / len(lotes_subp))
 
-            # Prorrateo de Orden de Proceder y Cargados para este lote
             kg_orden_lote = kg_orden_subp * factor
             kg_carg_lote = kg_carg_subp * factor
 
+            # 1. Determinar el avance de cada proceso en este lote según FIFO
+            av_lote_por_proc = {}
+            req_lote_por_proc = {}
+            for proc in PROCESOS_LINEA:
+                req_lp = req_total_subp[proc] * factor
+                av_lp = min(req_lp, av_disponible[proc])
+                av_disponible[proc] -= av_lp
+                
+                req_lote_por_proc[proc] = req_lp
+                av_lote_por_proc[proc] = av_lp
+
+            # 2. Calcular los KILOS FÍSICAMENTE DISPONIBLES para cada estación
             detalle_procesos_lote = {}
             for proc in PROCESOS_LINEA:
-                req_lote_p = req_total_subp[proc] * factor
-                av_lote_p = min(req_lote_p, av_disponible[proc])
-                av_disponible[proc] -= av_lote_p
-                pend_lote_p = max(0.0, req_lote_p - av_lote_p)
+                req_lp = req_lote_por_proc[proc]
+                av_lp = av_lote_por_proc[proc]
+                pend_total_lp = max(0.0, req_lp - av_lp)
 
-                # Compuertas
-                av_global_subp = subp_global_status[subp]
-                predecesores = COMPUERTAS_PROCESO.get(proc, [])
-                bloqueado = False
-                motivos = []
-                for pred, umbral in predecesores:
-                    if av_global_subp.get(pred, 0.0) < umbral:
-                        bloqueado = True
-                        motivos.append(f"{pred} ({av_global_subp.get(pred, 0.0)*100:.0f}% de {umbral*100:.0f}%)")
+                predecesores = PREDECESORES_DIRECTOS.get(proc, [])
 
-                if req_lote_p == 0:
+                if proc == "Ingeniería":
+                    # Para ingeniería, lo disponible es todo lo que falta por cargar
+                    kg_disp = pend_total_lp
+                    kg_liberados_pred = req_lp
+                elif not predecesores:
+                    kg_disp = pend_total_lp
+                    kg_liberados_pred = req_lp
+                else:
+                    # Lo liberado por los predecesores para este lote específico
+                    if len(predecesores) == 1:
+                        kg_liberados_pred = av_lote_por_proc.get(predecesores[0], 0.0)
+                    else:
+                        # Para Armado Soldadura (mínimo entre Perforado y CNCPL)
+                        kg_liberados_pred = min([av_lote_por_proc.get(pred, 0.0) for pred in predecesores])
+
+                    # Kilos en piso = Lo liberado por el predecesor menos lo que esta estación ya procesó
+                    kg_disp = max(0.0, kg_liberados_pred - av_lp)
+                    kg_disp = min(kg_disp, pend_total_lp) # No puede superar lo que falta
+
+                # Clasificación y Semáforos
+                if req_lp == 0:
                     estado = "NA"
                     color = "#f1f3f4"
                     hover = "Sin requerimiento para este lote"
-                elif pend_lote_p <= 0.01:
+                elif pend_total_lp <= 0.01:
                     estado = "COMPLETADO"
                     color = "#b7e1cd"
-                    hover = "Completado: 0 kg pendientes"
-                elif bloqueado:
-                    estado = "BLOQUEADO"
-                    color = "#f4c7c3"
-                    hover = f"Faltan {pend_lote_p:,.0f} kg - Bloqueado por: {', '.join(motivos)}"
-                elif av_lote_p > 0:
-                    estado = "EN_PROCESO"
-                    color = "#fff2cc"
-                    hover = f"Faltan {pend_lote_p:,.0f} kg - En proceso de fabricación"
+                    hover = "Lote completado al 100% en esta estación"
+                elif kg_disp > 0:
+                    estado = "DISPONIBLE"
+                    color = "#fff2cc" if av_lp > 0 else "#ffe599"
+                    hover = f"{kg_disp:,.0f} kg disponibles en piso (Faltan {pend_total_lp:,.0f} kg en total para el lote)"
                 else:
-                    estado = "EN_ESPERA"
-                    color = "#ffe599"
-                    hover = f"Faltan {pend_lote_p:,.0f} kg - Habilitado en piso (en espera de operarios)"
+                    # Faltan kilos para el lote, pero en la estación hay 0 kg disponibles porque el anterior no ha liberado
+                    estado = "SIN_MATERIAL"
+                    color = "#f4c7c3"
+                    nombres_pred = ", ".join(predecesores)
+                    hover = f"0 kg disponibles en piso. Retenido aguas arriba por: {nombres_pred} (Faltan {pend_total_lp:,.0f} kg en total)"
 
                 detalle_procesos_lote[proc] = {
-                    "pendientes": pend_lote_p,
+                    "disponibles": kg_disp,
+                    "pendientes_totales": pend_total_lp,
                     "color": color,
                     "estado": estado,
                     "hover": hover
@@ -328,7 +323,7 @@ try:
                     "Mes_Entrega": lote["Mes_Entrega"],
                     "Semana_Entrega": lote["Semana_Entrega"],
                     "Proceso": proc,
-                    "Kg_Asignados": pend_lote_p
+                    "Kg_Disponibles": kg_disp
                 })
 
             datos_lotes_calculados.append({
@@ -350,26 +345,26 @@ try:
     # 4. PESTAÑAS DE TRABAJO
     # -------------------------------------------------------------
     tab_reporte, tab_torre_control, tab_sim_proceso, tab_matriz_global = st.tabs([
-        "📊 Matriz Visual: Kilos Faltantes por Proceso",
+        "📊 Matriz: Kilos Disponibles en Piso",
         "🚀 Torre de Control & Despachos",
         "🎯 Simulador por Estación",
         "🗓️ Matriz Global (Dotación)"
     ])
 
     # -------------------------------------------------------------
-    # TAB 1: REPORTE DE OPERACIONES CON KILOS FALTANTES
+    # TAB 1: REPORTE DE KILOS DISPONIBLES EN PISO
     # -------------------------------------------------------------
     with tab_reporte:
-        st.markdown(f"### 📋 Kilos Faltantes por Fabricar (Desde {mes_seleccionado})")
-        st.caption(f"Lotes de despacho evaluados: **{len(datos_lotes_calculados)}**. Los kilos de Orden de Proceder y Cargados se encuentran distribuidos por lote.")
+        st.markdown(f"### 📋 Kilos Disponibles para Procesar en Piso (Desde {mes_seleccionado})")
+        st.caption("Muestra exclusivamente los kilos que **ya fueron liberados por el proceso anterior** y están esperando ser trabajados en cada máquina.")
 
-        # Leyenda visual
+        # Leyenda visual adaptada
         st.markdown("""
         <div style="display:flex; gap:12px; margin-bottom:10px; font-size:12px; flex-wrap:wrap;">
-            <span><span style="background-color:#b7e1cd; padding:2px 7px; border-radius:3px; font-weight:bold;">0</span> Terminado (0 kg pendientes)</span>
-            <span><span style="background-color:#fff2cc; padding:2px 7px; border-radius:3px; font-weight:bold;">Kg</span> En Fabricación</span>
-            <span><span style="background-color:#ffe599; padding:2px 7px; border-radius:3px; font-weight:bold;">Kg</span> Habilitado en Piso (En Espera)</span>
-            <span><span style="background-color:#f4c7c3; padding:2px 7px; border-radius:3px; font-weight:bold;">Kg ⛔</span> Bloqueado por Predecesor</span>
+            <span><span style="background-color:#b7e1cd; padding:2px 7px; border-radius:3px; font-weight:bold;">0</span> Completado al 100%</span>
+            <span><span style="background-color:#fff2cc; padding:2px 7px; border-radius:3px; font-weight:bold;">Kg</span> Disponible (Fabricación en curso)</span>
+            <span><span style="background-color:#ffe599; padding:2px 7px; border-radius:3px; font-weight:bold;">Kg</span> Disponible (En espera en piso)</span>
+            <span><span style="background-color:#f4c7c3; padding:2px 7px; border-radius:3px; font-weight:bold;">0 ⛔</span> 0 kg disponibles (Esperando proceso anterior)</span>
             <span><span style="background-color:#fff; border:1px solid #ccc; padding:2px 7px; border-radius:3px;">⚠️</span> Dif. > 5% Orden vs Cargados</span>
         </div>
         """, unsafe_allow_html=True)
@@ -377,11 +372,10 @@ try:
         if not datos_lotes_calculados:
             st.warning("⚠️ No se encontraron lotes activos para mostrar.")
         else:
-            # Acumuladores de totales por columna
             total_kg_despacho = sum(item["Kg_Lote"] for item in datos_lotes_calculados)
             total_kg_orden = sum(item["Kg_Orden"] for item in datos_lotes_calculados)
             total_kg_carg = sum(item["Kg_Cargados"] for item in datos_lotes_calculados)
-            totales_procesos = {p: sum(item["Procesos"][p]["pendientes"] for item in datos_lotes_calculados) for p in PROCESOS_LINEA}
+            totales_disponibles = {p: sum(item["Procesos"][p]["disponibles"] for item in datos_lotes_calculados) for p in PROCESOS_LINEA}
 
             filas_html = []
             for idx, item in enumerate(datos_lotes_calculados):
@@ -392,7 +386,6 @@ try:
                 kg_orden = item["Kg_Orden"]
                 kg_carg = item["Kg_Cargados"]
 
-                # Alerta 5% a nivel de subproyecto
                 alerta_ing = ""
                 if item["Kg_Orden_Subp"] > 0 and item["Kg_Carg_Subp"] > 0:
                     dif_pct = abs(item["Kg_Carg_Subp"] - item["Kg_Orden_Subp"]) / item["Kg_Orden_Subp"]
@@ -404,7 +397,7 @@ try:
 
                 for proc in PROCESOS_LINEA:
                     info_p = item["Procesos"][proc]
-                    pend_kg = info_p["pendientes"]
+                    disp_kg = info_p["disponibles"]
                     color_bg = info_p["color"]
                     hover = info_p["hover"]
 
@@ -412,10 +405,10 @@ try:
                         texto_celda = "-"
                     elif info_p["estado"] == "COMPLETADO":
                         texto_celda = "0"
-                    elif info_p["estado"] == "BLOQUEADO":
-                        texto_celda = f"{pend_kg:,.0f} ⛔"
+                    elif info_p["estado"] == "SIN_MATERIAL":
+                        texto_celda = "0 ⛔"
                     else:
-                        texto_celda = f"{pend_kg:,.0f}"
+                        texto_celda = f"{disp_kg:,.0f}"
 
                     celdas_proc.append(
                         f'<td title="{hover}" style="background-color:{color_bg}; padding:6px 4px; text-align:center; border-left:1px solid #e0e0e0; font-size:11px; font-weight:500;">{texto_celda}</td>'
@@ -432,12 +425,10 @@ try:
 </tr>"""
                 filas_html.append(fila_str)
 
-            # Encabezados de columnas
             encabezados_proc = "".join([f'<th style="padding:9px 5px; text-align:center; min-width:82px; border-left:1px solid #e0e0e0;">{p}</th>' for p in PROCESOS_LINEA])
 
-            # Celdas de totales del pie de tabla
             totales_proc_tds = "".join([
-                f'<td style="padding:8px 5px; text-align:center; border-left:1px solid #ccc; font-weight:bold; background-color:#fff2cc; color:#111;">{totales_procesos[p]:,.0f}</td>'
+                f'<td style="padding:8px 5px; text-align:center; border-left:1px solid #ccc; font-weight:bold; background-color:#fff2cc; color:#111;">{totales_disponibles[p]:,.0f}</td>'
                 for p in PROCESOS_LINEA
             ])
 
@@ -473,7 +464,7 @@ tfoot td {{ background-color:#e8eaed; position:sticky; bottom:0; z-index:5; bord
 </tbody>
 <tfoot>
 <tr>
-<td style="padding:8px 7px; text-align:left; position:sticky; left:0; background-color:#e8eaed; z-index:6;">TOTAL PENDIENTE</td>
+<td style="padding:8px 7px; text-align:left; position:sticky; left:0; background-color:#e8eaed; z-index:6;">TOTAL DISPONIBLE</td>
 <td style="padding:8px 7px; text-align:left; position:sticky; left:135px; background-color:#e8eaed; z-index:6;">-</td>
 <td style="padding:8px 7px; text-align:center;">-</td>
 <td style="padding:8px 7px; text-align:right;">{total_kg_despacho:,.0f}</td>
