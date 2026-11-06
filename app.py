@@ -1,61 +1,61 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import smartsheet
+import re
 
-st.set_page_config(page_title="Simulador de Capacidad - Planta", layout="wide")
+st.set_page_config(page_title="Validador de Estructura - Planta", layout="wide")
+st.title("🏭 Inspección y Normalización de Datos")
 
-# -------------------------------------------------------------
-# FUNCIÓN DE CONEXIÓN A SMARTSHEET (CON CACHÉ DE 10 MINUTOS)
-# -------------------------------------------------------------
-@st.cache_data(ttl=600)
-def cargar_hoja_smartsheet(sheet_id):
-    """Descarga una hoja de Smartsheet y la convierte en DataFrame de pandas."""
-    token = st.secrets["SMARTSHEET_ACCESS_TOKEN"]
-    cliente = smartsheet.Smartsheet(token)
-    cliente.errors_as_exceptions(True)
-    
+@st.cache_data(ttl=300)
+def cargar_hoja(sheet_id):
+    cliente = smartsheet.Smartsheet(st.secrets["SMARTSHEET_ACCESS_TOKEN"])
     hoja = cliente.Sheets.get_sheet(int(sheet_id))
-    columnas = [col.title for col in hoja.columns]
-    
-    filas_datos = []
-    for fila in hoja.rows:
-        valores_fila = [celda.value for celda in fila.cells]
-        filas_datos.append(valores_fila)
-        
-    return pd.DataFrame(filas_datos, columns=columnas)
+    columnas = [col.title.strip() for col in hoja.columns]
+    filas = [[celda.value for celda in f.cells] for f in hoja.rows]
+    return pd.DataFrame(filas, columns=columnas)
 
-st.title("🏭 Simulador de Carga y Capacidad de Planta")
-
-# Botón para refrescar datos manualmente
-if st.button("🔄 Recargar datos desde Smartsheet"):
-    st.cache_data.clear()
-    st.rerun()
-
-# -------------------------------------------------------------
-# LECTURA DE PLANILLAS
-# -------------------------------------------------------------
 try:
-    with st.spinner("Conectando con Smartsheet..."):
-        df_backlog = cargar_hoja_smartsheet(st.secrets["SHEET_ID_BACKLOG"])
-        df_procesos = cargar_hoja_smartsheet(st.secrets["SHEET_ID_PROCESOS"])
-        df_prod = cargar_hoja_smartsheet(st.secrets["SHEET_ID_PRODUCTIVIDAD"])
-        
-    st.success("✅ Conexión exitosa con Smartsheet.")
+    df_backlog = cargar_hoja(st.secrets["SHEET_ID_BACKLOG"])
+    df_procesos = cargar_hoja(st.secrets["SHEET_ID_PROCESOS"])
+    df_prod = cargar_hoja(st.secrets["SHEET_ID_PRODUCTIVIDAD"])
+
+    st.success("✅ Hojas conectadas correctamente.")
+
+    # 1. Análisis de Columnas de la Hoja Procesos
+    cols_procesos = df_procesos.columns.tolist()
     
-    # Vista previa de validación de columnas
-    st.markdown("### Verificación de Estructura de Datos")
-    t1, t2, t3 = st.tabs(["Hoja Backlog", "Hoja Procesos/Kilos", "Hoja Productividad"])
-    with t1:
-        st.write(f"Filas encontradas: {len(df_backlog)}")
-        st.dataframe(df_backlog.head(3), use_container_width=True)
-    with t2:
-        st.write(f"Filas encontradas: {len(df_procesos)}")
-        st.dataframe(df_procesos.head(3), use_container_width=True)
-    with t3:
-        st.write(f"Filas encontradas: {len(df_prod)}")
-        st.dataframe(df_prod.head(3), use_container_width=True)
+    # Identificar columnas de "kilos lanzados" y "kilos [avance]"
+    lanzados_dict = {}
+    avances_dict = {}
+
+    for c in cols_procesos:
+        c_lower = c.lower().strip()
+        if "kilos lanzados" in c_lower:
+            proceso_nombre = re.sub(r"kilos lanzados", "", c, flags=re.IGNORECASE).strip()
+            lanzados_dict[proceso_nombre] = c
+        elif c_lower.startswith("kilos ") and not any(x in c_lower for x in ["lanzados", "orden", "cargados"]):
+            proceso_nombre = re.sub(r"^kilos\s+", "", c, flags=re.IGNORECASE).strip()
+            avances_dict[proceso_nombre] = c
+
+    # Mostrar diagnóstico en pantalla
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("### 🔍 Procesos detectados para 'Lanzados'")
+        st.json(lanzados_dict)
+    with c2:
+        st.markdown("### 🔍 Procesos detectados para 'Avance Real'")
+        st.json(avances_dict)
+
+    # 2. Validación de columnas de ingeniería
+    col_orden = [c for c in cols_procesos if "orden de proceder" in c.lower()]
+    col_cargados = [c for c in cols_procesos if "cargados" in c.lower()]
+    
+    st.markdown("### 📐 Columnas de Ingeniería detectadas")
+    st.write(f"- **Orden de Proceder:** {col_orden[0] if col_orden else '❌ No encontrada'}")
+    st.write(f"- **Kilos Cargados:** {col_cargados[0] if col_cargados else '❌ No encontrada'}")
+
+    st.markdown("### 📋 Muestra de la Hoja de Productividad")
+    st.dataframe(df_prod.head(10), use_container_width=True)
 
 except Exception as e:
-    st.error(f"Error al conectar con Smartsheet: {e}")
-    st.info("Revisa que los IDs y el Token en 'Secrets' estén bien escritos y que la cuenta tenga acceso a esas hojas.")
+    st.error(f"Error durante la inspección: {e}")
