@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import smartsheet
 import re
@@ -147,11 +148,11 @@ def diagnosticar_bloqueos_subproyecto(df_subp_procesos):
         av_pct = avances[proc]
         
         if req == 0:
-            estados_estaciones[proc] = {"estado": "NA", "color": "#f1f3f4", "texto": "-", "detalle": "Sin requerimiento"}
+            estados_estaciones[proc] = {"estado": "NA", "color": "#f1f3f4", "texto": "-", "detalle": "Sin carga para este proceso"}
             continue
             
         if av_pct >= 1.0:
-            estados_estaciones[proc] = {"estado": "OK", "color": "#b7e1cd", "texto": "100%", "detalle": "Completado"}
+            estados_estaciones[proc] = {"estado": "OK", "color": "#b7e1cd", "texto": "100%", "detalle": "Completado al 100%"}
             continue
 
         predecesores = COMPUERTAS_PROCESO.get(proc, [])
@@ -172,12 +173,12 @@ def diagnosticar_bloqueos_subproyecto(df_subp_procesos):
         elif av_pct > 0:
             estados_estaciones[proc] = {
                 "estado": "EN_PROCESO", "color": "#fff2cc", 
-                "texto": f"{av_pct*100:.0f}%", "detalle": f"En curso: restan {pendientes[proc]:,.0f} kg"
+                "texto": f"{av_pct*100:.0f}%", "detalle": f"En fabricación activa: restan {pendientes[proc]:,.0f} kg"
             }
         else:
             estados_estaciones[proc] = {
                 "estado": "EN_ESPERA", "color": "#ffe599", 
-                "texto": "0%", "detalle": f"Habilitado en piso con {req:,.0f} kg en espera de operarios"
+                "texto": "0%", "detalle": f"Habilitado con {req:,.0f} kg en espera de operarios"
             }
 
     return estados_estaciones, requeridos, pendientes, avances
@@ -227,7 +228,8 @@ try:
     else:
         df_backlog_activo = df_backlog_raw[valido_fecha_prog].copy()
 
-    df_backlog_activo["Fecha_DT"] = pd.to_datetime(df_backlog_activo[col_fecha_prog], errors='coerce')
+    # Formateo de fechas robusto (con soporte para formato DD/MM/AAAA)
+    df_backlog_activo["Fecha_DT"] = pd.to_datetime(df_backlog_activo[col_fecha_prog], errors='coerce', dayfirst=True)
     df_backlog_activo = df_backlog_activo.dropna(subset=["Fecha_DT"]).sort_values("Fecha_DT")
     df_backlog_activo["Mes_Entrega"] = df_backlog_activo["Fecha_DT"].dt.strftime("%Y-%m")
     df_backlog_activo["Semana_Entrega"] = df_backlog_activo["Fecha_DT"].apply(
@@ -288,129 +290,123 @@ try:
     with tab_reporte:
         c_sup1, c_sup2 = st.columns([3, 1])
         with c_sup1:
-            st.markdown("### 📋 Avance Proyecto por Despacho y Proceso")
-            st.caption("Pasa el cursor sobre las celdas rojas para conocer qué proceso predecesor está bloqueando el avance.")
+            st.markdown(f"### 📋 Avance Proyecto por Despacho y Proceso (Desde {mes_seleccionado})")
+            st.caption(f"Lotes activos encontrados: **{len(df_backlog_horizonte)}**. Pasa el cursor sobre las celdas rojas para conocer qué proceso bloquea el paso.")
         with c_sup2:
-            modo_celda = st.radio("Mostrar en celdas:", ["Kilos Avanzados", "Porcentaje de Avance (%)"], horizontal=True)
+            modo_celda = st.radio("Mostrar en celdas:", ["Kilos Avanzados", "Porcentaje (%)"], horizontal=True)
 
-        # Leyenda visual estilo ejecutivo
-        st.markdown("""
-        <div style="display:flex; gap:15px; margin-bottom:12px; font-size:12px; flex-wrap:wrap;">
-            <span><span style="background-color:#b7e1cd; padding:3px 8px; border-radius:3px; font-weight:bold;">100%</span> Completado</span>
-            <span><span style="background-color:#fff2cc; padding:3px 8px; border-radius:3px; font-weight:bold;">> 0%</span> En Proceso</span>
-            <span><span style="background-color:#ffe599; padding:3px 8px; border-radius:3px; font-weight:bold;">0%</span> Habilitado en Piso (En Espera)</span>
-            <span><span style="background-color:#f4c7c3; padding:3px 8px; border-radius:3px; font-weight:bold;">⛔</span> Bloqueado por Predecesor</span>
-            <span><span style="background-color:#fff; border:1px solid #ccc; padding:3px 8px; border-radius:3px;">⚠️</span> Dif. > 5% Orden vs Cargados</span>
-        </div>
-        """, unsafe_allow_html=True)
+        if df_backlog_horizonte.empty:
+            st.warning("⚠️ No se encontraron lotes con fechas programadas activas para el mes seleccionado.")
+        else:
+            # Leyenda visual
+            st.markdown("""
+            <div style="display:flex; gap:12px; margin-bottom:10px; font-size:12px; flex-wrap:wrap;">
+                <span><span style="background-color:#b7e1cd; padding:2px 7px; border-radius:3px; font-weight:bold;">100%</span> Completado</span>
+                <span><span style="background-color:#fff2cc; padding:2px 7px; border-radius:3px; font-weight:bold;">> 0%</span> En Fabricación</span>
+                <span><span style="background-color:#ffe599; padding:2px 7px; border-radius:3px; font-weight:bold;">0%</span> Habilitado en Piso (En Espera)</span>
+                <span><span style="background-color:#f4c7c3; padding:2px 7px; border-radius:3px; font-weight:bold;">⛔</span> Bloqueado por Predecesor</span>
+                <span><span style="background-color:#fff; border:1px solid #ccc; padding:2px 7px; border-radius:3px;">⚠️</span> Dif. > 5% Orden vs Cargados</span>
+            </div>
+            """, unsafe_allow_html=True)
 
-        # Construcción de la Tabla HTML con Sticky Columns y Colores Pastel
-        html_tabla = """
-        <div style="overflow-x:auto; max-height:680px; border:1px solid #ddd; border-radius:6px; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
-        <table style="width:100%; border-collapse:collapse; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif; font-size:12px; text-align:right;">
-            <thead>
-                <tr style="background-color:#fce5cd; color:#333; position:sticky; top:0; z-index:5; border-bottom:2px solid #ccc;">
-                    <th style="padding:10px 8px; text-align:left; position:sticky; left:0; background-color:#fce5cd; z-index:6; min-width:140px;">Sub-Proyecto</th>
-                    <th style="padding:10px 8px; text-align:left; position:sticky; left:140px; background-color:#fce5cd; z-index:6; min-width:85px;">Lote ID</th>
-                    <th style="padding:10px 8px; text-align:center; min-width:95px;">F. Despacho</th>
-                    <th style="padding:10px 8px; min-width:95px;">Kg Despacho</th>
-                    <th style="padding:10px 8px; min-width:105px;">Orden Proceder</th>
-                    <th style="padding:10px 8px; min-width:105px;">Kilos Cargados</th>
-        """
-        for proc in PROCESOS_LINEA:
-            html_tabla += f'<th style="padding:10px 6px; text-align:center; min-width:82px; border-left:1px solid #e0e0e0;">{proc}</th>'
-        
-        html_tabla += """
-                    <th style="padding:10px 8px; text-align:center; min-width:85px; border-left:2px solid #bbb;">Avance Total</th>
-                </tr>
-            </thead>
-            <tbody>
-        """
+            # Generación limpia del HTML sin sangrías que rompan el parser
+            filas_html = []
+            for idx, lote in df_backlog_horizonte.iterrows():
+                subp = str(lote[col_sub_backlog]).strip()
+                id_lote = str(lote[col_id_fila])
+                f_prog = lote["Fecha_DT"].strftime("%d/%m/%Y")
+                kg_lote = lote["Kg_Prog_Num"]
 
-        # Recorrer lotes de despacho
-        for idx, lote in df_backlog_horizonte.iterrows():
-            subp = str(lote[col_sub_backlog]).strip()
-            id_lote = str(lote[col_id_fila])
-            f_prog = lote["Fecha_DT"].strftime("%d/%m/%Y")
-            kg_lote = lote["Kg_Prog_Num"]
+                info_ing = datos_ing.get(subp, {"Orden": 0, "Cargados": 0})
+                kg_orden = info_ing["Orden"]
+                kg_carg = info_ing["Cargados"]
 
-            # Datos comerciales
-            info_ing = datos_ing.get(subp, {"Orden": 0, "Cargados": 0})
-            kg_orden = info_ing["Orden"]
-            kg_carg = info_ing["Cargados"]
+                alerta_ing = ""
+                if kg_orden > 0 and kg_carg > 0:
+                    dif_pct = abs(kg_carg - kg_orden) / kg_orden
+                    if dif_pct > 0.05:
+                        alerta_ing = f' <span title="Diferencia mayor a 5% ({dif_pct*100:.1f}%)" style="cursor:help;">⚠️</span>'
 
-            # Alerta 5% entre orden y cargados
-            alerta_ing = ""
-            if kg_orden > 0 and kg_carg > 0:
-                dif_pct = abs(kg_carg - kg_orden) / kg_orden
-                if dif_pct > 0.05:
-                    alerta_ing = f'<span title="Variación mayor al 5% ({dif_pct*100:.1f}%)" style="cursor:help; margin-left:4px;">⚠️</span>'
+                info_subp = diag_subp_dict.get(subp)
+                estados, reqs, pends, avances = info_subp if info_subp else ({}, {}, {}, {})
 
-            # Diagnóstico del subproyecto
-            info_subp = diag_subp_dict.get(subp)
-            if info_subp:
-                estados, reqs, pends, avances = info_subp
-            else:
-                estados, reqs, pends, avances = {}, {}, {}, {}
+                tot_req = sum(reqs.values())
+                tot_av = sum(reqs[p] - pends[p] for p in PROCESOS_LINEA if p in reqs)
+                pct_global = (tot_av / tot_req * 100) if tot_req > 0 else 0
 
-            # Calcular Avance Ponderado Total
-            tot_req = sum(reqs.values())
-            tot_av = sum(reqs[p] - pends[p] for p in PROCESOS_LINEA if p in reqs)
-            pct_global = (tot_av / tot_req * 100) if tot_req > 0 else 0
+                bg_fila = "#ffffff" if idx % 2 == 0 else "#fafafa"
 
-            color_fila_bg = "#ffffff" if idx % 2 == 0 else "#fafafa"
+                celdas_proc = []
+                for proc in PROCESOS_LINEA:
+                    est = estados.get(proc, {"estado": "NA", "color": "#f1f3f4", "texto": "-", "detalle": ""})
+                    color_bg = est["color"]
+                    hover = est["detalle"]
+                    req_p = reqs.get(proc, 0.0)
+                    pend_p = pends.get(proc, 0.0)
+                    av_kg = max(0.0, req_p - pend_p)
+                    av_pct = avances.get(proc, 0.0) * 100
 
-            html_tabla += f"""
-                <tr style="background-color:{color_fila_bg}; border-bottom:1px solid #eee;">
-                    <td style="padding:8px 8px; text-align:left; font-weight:600; position:sticky; left:0; background-color:{color_fila_bg}; z-index:2; border-right:1px solid #ddd;">{subp}</td>
-                    <td style="padding:8px 8px; text-align:left; position:sticky; left:140px; background-color:{color_fila_bg}; z-index:2; border-right:1px solid #ddd; color:#555;">{id_lote}</td>
-                    <td style="padding:8px 8px; text-align:center; color:#444;">{f_prog}</td>
-                    <td style="padding:8px 8px; font-weight:500;">{kg_lote:,.0f}</td>
-                    <td style="padding:8px 8px; color:#555;">{kg_orden:,.0f}</td>
-                    <td style="padding:8px 8px; font-weight:500;">{kg_carg:,.0f}{alerta_ing}</td>
-            """
+                    val = f"{av_kg:,.0f}" if modo_celda == "Kilos Avanzados" else f"{av_pct:.0f}%"
+                    if req_p == 0: val = "-"
+                    icono = " ⛔" if est["estado"] == "BLOQUEADO" else ""
 
-            # Celdas para cada uno de los 12 procesos
-            for proc in PROCESOS_LINEA:
-                est = estados.get(proc, {"estado": "NA", "color": "#f1f3f4", "texto": "-", "detalle": ""})
-                color_bg = est["color"]
-                detalle_hover = est["detalle"]
-                
-                req_p = reqs.get(proc, 0.0)
-                pend_p = pends.get(proc, 0.0)
-                av_kg = max(0.0, req_p - pend_p)
-                av_pct = avances.get(proc, 0.0) * 100
+                    celdas_proc.append(
+                        f'<td title="{hover}" style="background-color:{color_bg}; padding:6px 4px; text-align:center; border-left:1px solid #e0e0e0; font-size:11px; font-weight:500;">{val}{icono}</td>'
+                    )
 
-                if modo_celda == "Kilos Avanzados":
-                    valor_mostrar = f"{av_kg:,.0f}" if req_p > 0 else "-"
-                else:
-                    valor_mostrar = f"{av_pct:.0f}%" if req_p > 0 else "-"
+                color_total = "#b7e1cd" if pct_global >= 100 else ("#fff2cc" if pct_global > 30 else "#f4c7c3")
 
-                # Icono de bloqueo visual si está bloqueado
-                icono_bloqueo = " ⛔" if est["estado"] == "BLOQUEADO" else ""
+                fila_str = f"""<tr style="background-color:{bg_fila}; border-bottom:1px solid #eee;">
+<td style="padding:7px; text-align:left; font-weight:600; position:sticky; left:0; background-color:{bg_fila}; z-index:2; border-right:1px solid #ddd;">{subp}</td>
+<td style="padding:7px; text-align:left; position:sticky; left:135px; background-color:{bg_fila}; z-index:2; border-right:1px solid #ddd; color:#555;">{id_lote}</td>
+<td style="padding:7px; text-align:center;">{f_prog}</td>
+<td style="padding:7px; text-align:right; font-weight:500;">{kg_lote:,.0f}</td>
+<td style="padding:7px; text-align:right; color:#555;">{kg_orden:,.0f}</td>
+<td style="padding:7px; text-align:right; font-weight:500;">{kg_carg:,.0f}{alerta_ing}</td>
+{''.join(celdas_proc)}
+<td style="padding:7px; text-align:center; font-weight:bold; background-color:{color_total}; border-left:2px solid #bbb;">{pct_global:.0f}%</td>
+</tr>"""
+                filas_html.append(fila_str)
 
-                html_tabla += f"""
-                    <td title="{detalle_hover}" style="background-color:{color_bg}; padding:7px 5px; text-align:center; border-left:1px solid #e0e0e0; cursor:default; font-size:11px; font-weight:500;">
-                        {valor_mostrar}{icono_bloqueo}
-                    </td>
-                """
+            encabezados_proc = "".join([f'<th style="padding:9px 5px; text-align:center; min-width:80px; border-left:1px solid #e0e0e0;">{p}</th>' for p in PROCESOS_LINEA])
 
-            # Columna de Avance Total
-            color_total = "#b7e1cd" if pct_global >= 100 else ("#fff2cc" if pct_global > 30 else "#f4c7c3")
-            html_tabla += f"""
-                    <td style="padding:8px 8px; text-align:center; font-weight:bold; background-color:{color_total}; border-left:2px solid #bbb;">
-                        {pct_global:.0f}%
-                    </td>
-                </tr>
-            """
-
-        html_tabla += """
-            </tbody>
-        </table>
-        </div>
-        """
-
-        st.markdown(html_tabla, unsafe_allow_html=True)
+            tabla_completa = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body {{ margin:0; padding:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
+.tabla-container {{ overflow:auto; max-height:600px; border:1px solid #ccc; border-radius:4px; }}
+table {{ width:100%; border-collapse:collapse; font-size:12px; }}
+th {{ background-color:#fce5cd; color:#333; position:sticky; top:0; z-index:5; border-bottom:2px solid #ccc; }}
+</style>
+</head>
+<body>
+<div class="tabla-container">
+<table>
+<thead>
+<tr>
+<th style="padding:9px 7px; text-align:left; position:sticky; left:0; background-color:#fce5cd; z-index:6; min-width:135px;">Sub-Proyecto</th>
+<th style="padding:9px 7px; text-align:left; position:sticky; left:135px; background-color:#fce5cd; z-index:6; min-width:85px;">Lote ID</th>
+<th style="padding:9px 7px; text-align:center; min-width:90px;">F. Despacho</th>
+<th style="padding:9px 7px; text-align:right; min-width:95px;">Kg Despacho</th>
+<th style="padding:9px 7px; text-align:right; min-width:105px;">Orden Proceder</th>
+<th style="padding:9px 7px; text-align:right; min-width:105px;">Kilos Cargados</th>
+{encabezados_proc}
+<th style="padding:9px 7px; text-align:center; min-width:85px; border-left:2px solid #bbb;">Avance Total</th>
+</tr>
+</thead>
+<tbody>
+{''.join(filas_html)}
+</tbody>
+</table>
+</div>
+</body>
+</html>
+"""
+            # Renderizado en contenedor aislado garantizado
+            components.html(tabla_completa, height=620, scrolling=False)
 
     # -------------------------------------------------------------
     # TAB 2: TORRE DE CONTROL & DESPACHOS
