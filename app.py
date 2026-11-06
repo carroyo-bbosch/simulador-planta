@@ -160,3 +160,63 @@ try:
             if k.lower() in str(nombre_proceso).lower():
                 return v
         return 0
+
+    resumen["Operarios"] = resumen["Proceso"].apply(asignar_operarios)
+    resumen["Capacidad_HH_Sem"] = resumen["Operarios"] * horas_sem * eficiencia
+
+    def calc_semanas(row):
+        return round(row["HH_Pendientes"] / row["Capacidad_HH_Sem"], 1) if row["Capacidad_HH_Sem"] > 0 else 0.0
+
+    def calc_saturacion(row):
+        cap_2sem = row["Capacidad_HH_Sem"] * 2
+        return round((row["HH_Pendientes"] / cap_2sem) * 100, 1) if cap_2sem > 0 else 0.0
+
+    resumen["Semanas_Cola"] = resumen.apply(calc_semanas, axis=1)
+    resumen["Saturacion_%"] = resumen.apply(calc_saturacion, axis=1)
+
+    def diagnostico(sat):
+        if sat > 100:
+            return "🔴 CUELLO DE BOTELLA"
+        elif sat >= 80:
+            return "🟡 CARGA ALTA"
+        return "🟢 OK"
+
+    resumen["Diagnostico"] = resumen["Saturacion_%"].apply(diagnostico)
+
+    # -------------------------------------------------------------
+    # 4. VISUALIZACIÓN
+    # -------------------------------------------------------------
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Kilos Reales en Cola", f"{df_carga['Kg_Pendientes'].sum():,.0f} kg")
+    m2.metric("Lotes / Despachos Pendientes", len(df_backlog_activo))
+    m3.metric("Subproyectos Activos en Taller", len(subproyectos_vivos))
+
+    st.markdown("---")
+    
+    col_izq, col_der = st.columns([3, 2])
+    with col_izq:
+        st.markdown("### 📊 Demanda (HH) vs Capacidad Semanal")
+        fig = px.bar(
+            resumen[resumen["Operarios"] > 0],
+            x="Proceso",
+            y=["HH_Pendientes", "Capacidad_HH_Sem"],
+            barmode="group",
+            labels={"value": "Horas Hombre", "variable": "Indicador"}
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col_der:
+        st.markdown("### 📌 Filtros de Auditoría")
+        st.info(f"**Columna Fecha Programada:** `{col_fecha_prog}`")
+        st.info(f"**Columna Despacho Real:** `{col_despacho_real if col_despacho_real else 'No detectada'}`")
+        st.write(f"Filas totales Backlog: **{len(df_backlog_raw)}**")
+        st.write(f"Filas activas a fabricar: **{len(df_backlog_activo)}**")
+
+    st.markdown("### 📋 Diagnóstico por Estación de Trabajo")
+    st.dataframe(
+        resumen[["Proceso", "Operarios", "Kg_Pendientes", "Capacidad_HH_Sem", "Semanas_Cola", "Diagnostico"]], 
+        use_container_width=True
+    )
+
+except Exception as e:
+    st.error(f"Error procesando la información: {e}")
