@@ -38,16 +38,6 @@ PROCESOS_GANTT = [
     "Embalaje"
 ]
 
-COLOR_MAP_GANTT = {
-    "Ingeniería": "#102a45",
-    "CNCL": "#1f77b4",
-    "CNCPL": "#3b82f6",
-    "Soldadura": "#f97316",
-    "Fabricado": "#10b981",
-    "Galvanizado": "#8b5cf6",
-    "Embalaje": "#64748b"
-}
-
 DOTACION_BASE_DEFAULT = {
     "Ingeniería": 2, "CNCL": 4, "CNCPL": 4, 
     "Talón": 2, "DoblezL": 2, "Perforado": 3, "Armado Soldadura": 8, 
@@ -157,7 +147,7 @@ def normalizar_procesos(df_proc):
     return pd.DataFrame(registros), datos_ingenieria
 
 # -------------------------------------------------------------
-# 2. GENERADOR HTML DE TABLA DE CONTROL
+# 2. GENERADORES HTML DE TABLAS
 # -------------------------------------------------------------
 def renderizar_tabla_html(df_mostrar, totales):
     filas = []
@@ -244,6 +234,105 @@ thead th {{ background-color:#fce5cd; color:#333; position:sticky; top:0; z-inde
 </html>"""
     return html
 
+def renderizar_cuadro_semanal_html(piv_data, dias_dict, semanas_cols, cap_semanal_dict):
+    proc_labels = [
+        ("Ingeniería", "1- Ingeniería"),
+        ("CNCL", "2. CNCL"),
+        ("CNCPL", "3. CNCPL"),
+        ("Soldadura", "4. Soldadura"),
+        ("Fabricado", "5. Fabricado"),
+        ("Galvanizado", "6. Galvanizado"),
+        ("Embalaje", "7. Embalaje"),
+    ]
+    
+    filas_html = []
+    for proc_key, proc_nombre in proc_labels:
+        dias = dias_dict.get(proc_key, 0)
+        cap_sem = cap_semanal_dict.get(proc_key, 999999)
+        
+        celdas_semanas = []
+        for sem in semanas_cols:
+            val = piv_data.get((proc_key, sem), 0.0)
+            is_over = (val > cap_sem and val > 0)
+            color_txt = "color: #e53935; font-weight: bold;" if is_over else "color: #000;"
+            val_str = f"{val:,.0f}" if val > 0 else "0"
+            celdas_semanas.append(
+                f'<td style="padding:6px 10px; text-align:right; border:1px solid #000; {color_txt}">{val_str}</td>'
+            )
+            
+        fila = (
+            f'<tr style="background:#fff;">'
+            f'<td style="padding:6px 10px; text-align:left; border:1px solid #000; font-weight:500; position:sticky; left:0; background:#fff; z-index:2; min-width:140px;">{proc_nombre}</td>'
+            f'<td style="padding:6px 10px; text-align:right; border:1px solid #000; position:sticky; left:140px; background:#fff; z-index:2; min-width:90px;">{dias}</td>'
+            f'{"".join(celdas_semanas)}'
+            f'</tr>'
+        )
+        filas_html.append(fila)
+        
+    num_sem = len(semanas_cols)
+    th_semanas = "".join([f'<th style="padding:8px 8px; text-align:center; border:1px solid #000; min-width:80px; color:#fff; background-color:#135b79;">{sem}</th>' for sem in semanas_cols])
+    
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body {{ margin:0; padding:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
+.tabla-container {{ overflow:auto; max-height:450px; border:1px solid #000; }}
+table {{ width:100%; border-collapse:collapse; font-size:13px; }}
+th, td {{ border: 1px solid #000; }}
+</style>
+</head>
+<body>
+<div class="tabla-container">
+<table>
+<thead>
+<tr>
+    <th colspan="2" style="background:#fff; color:#000; text-align:center; padding:6px; font-weight:bold; position:sticky; left:0; z-index:6; border:1px solid #000;">Columnas fijas</th>
+    <th colspan="{num_sem}" style="background:#fff; color:#000; text-align:center; padding:6px; font-weight:bold; border:1px solid #000;">Columnas Moviles</th>
+</tr>
+<tr style="background-color:#135b79; color:#fff;">
+    <th style="padding:8px 10px; text-align:left; position:sticky; left:0; background-color:#135b79; z-index:5; min-width:140px; border:1px solid #000;"></th>
+    <th style="padding:8px 10px; text-align:center; position:sticky; left:140px; background-color:#135b79; z-index:5; min-width:90px; border:1px solid #000;">Cant. Días</th>
+    {th_semanas}
+</tr>
+</thead>
+<tbody>
+{''.join(filas_html)}
+</tbody>
+</table>
+</div>
+</body>
+</html>"""
+    return html
+
+def generar_semanas_consecutivas(min_wk_str, max_wk_str, min_count=7):
+    try:
+        y1, w1 = map(int, str(min_wk_str).split("-"))
+        y2, w2 = map(int, str(max_wk_str).split("-"))
+        dt1 = pd.Timestamp.fromisocalendar(y1, w1, 4)
+        dt2 = pd.Timestamp.fromisocalendar(y2, w2, 4)
+    except Exception:
+        dt1 = pd.Timestamp("2026-11-26") # 2026-48
+        dt2 = pd.Timestamp("2027-01-14") # 2027-02
+        
+    if dt1 > dt2:
+        dt1, dt2 = dt2, dt1
+        
+    weeks = []
+    cur = dt1
+    while cur <= dt2:
+        iso_y, iso_w, _ = cur.isocalendar()
+        weeks.append(f"{iso_y}-{iso_w:02d}")
+        cur += pd.Timedelta(weeks=1)
+        
+    while len(weeks) < min_count:
+        iso_y, iso_w, _ = cur.isocalendar()
+        weeks.append(f"{iso_y}-{iso_w:02d}")
+        cur += pd.Timedelta(weeks=1)
+        
+    return weeks
+
 # -------------------------------------------------------------
 # 3. CONTROLES GENERALES DE PLANTA
 # -------------------------------------------------------------
@@ -251,7 +340,7 @@ st.sidebar.header("⚙️ Parámetros de Operación")
 horas_sem = st.sidebar.number_input("Horas turno / semana por operario", value=44, step=1)
 eficiencia = st.sidebar.slider("Eficiencia Operativa / OEE (%)", 50, 100, 85) / 100.0
 
-st.title("📋 Control de Despachos & Carta Gantt de Carga")
+st.title("📋 Control de Despachos & Carga Semanal")
 
 if st.button("🔄 Refrescar Datos Smartsheet"):
     st.cache_data.clear()
@@ -360,11 +449,13 @@ try:
     # 4. MOTOR DE CÁLCULO: CAPACIDADES DIARIAS Y RUTA CRÍTICA
     # -------------------------------------------------------------
     capacidad_diaria_kg = {}
+    capacidad_semanal_kg = {}
     for proc in PROCESOS_LINEA:
         oper = DOTACION_BASE_DEFAULT.get(proc, 4)
         ratio = ratios_productividad.get(proc, 80.0)
         hh_dia = (oper * horas_sem / 5.5) * eficiencia
         capacidad_diaria_kg[proc] = max(100.0, hh_dia * ratio)
+        capacidad_semanal_kg[proc] = capacidad_diaria_kg[proc] * 5.5
 
     hoy = pd.Timestamp.now().normalize()
     filas_tabla_despachos = []
@@ -489,8 +580,6 @@ try:
                     "Fin": en_dt,
                     "Duracion": dur_p,
                     "Kilos": kg_val,
-                    "Texto": f"{id_despacho}: {kg_val:,.0f} kg ({dur_p}d)" if kg_val > 0 else f"{id_despacho}: 0 kg",
-                    "Texto_Simple": f"{kg_val:,.0f} kg ({dur_p}d)" if kg_val > 0 else "0 kg (Listo)"
                 })
 
             filas_tabla_despachos.append({
@@ -525,14 +614,12 @@ try:
         proyectos_disponibles = sorted([p for p in df_resultado["Proyecto_Display"].unique() if p.strip()])
         filtro_proy = st.multiselect("Filtrar por Nombre / Proyecto:", proyectos_disponibles, placeholder="Todos los proyectos")
 
-    # Subproyectos filtrados dinámicamente según proyecto
     df_sub_pool = df_resultado if not filtro_proy else df_resultado[df_resultado["Proyecto_Display"].isin(filtro_proy)]
     subproyectos_disponibles = sorted([s for s in df_sub_pool["Subproyecto"].unique() if s.strip()])
 
     with col_f2:
         filtro_subp = st.multiselect("Filtrar por Subproyecto:", subproyectos_disponibles, placeholder="Todos los subproyectos")
 
-    # Despachos filtrados dinámicamente según proyecto y subproyecto
     df_disp_pool = df_sub_pool if not filtro_subp else df_sub_pool[df_sub_pool["Subproyecto"].isin(filtro_subp)]
     despachos_disponibles = sorted([d for d in df_disp_pool["Identificador de fila"].unique() if d.strip()])
 
@@ -589,16 +676,17 @@ try:
     components.html(tabla_html, height=580, scrolling=False)
 
     # -------------------------------------------------------------
-    # 7. CARTA GANTT DE CARGA (SINCRONIZADA CON LOS FILTROS)
+    # 7. CUADRO DE CARGA SEMANAL POR PROCESO (REEMPLAZO DE LA GANTT)
     # -------------------------------------------------------------
     st.markdown("---")
-    st.markdown("### 📊 Carta Gantt de Carga & Secuencia de Fabricación")
-    st.caption("Los colores representan los 7 procesos clave para mantener una leyenda limpia y libre de saturación.")
+    st.markdown("### 📊 Cuadro de Carga Semanal por Proceso")
+    st.caption("Distribución de kilos por semana para los 7 procesos clave según la selección de filtros. Los números en rojo indican semanas que superan la capacidad semanal de la estación.")
 
-    # Sincronización estricta: Gantt toma únicamente los lotes visibles tras filtrar
+    # Sincronizar con los lotes visibles tras filtrar
     lotes_visibles = df_mostrar["Identificador de fila"].unique()
     df_gantt_filtrado = df_gantt_total[df_gantt_total["Identificador de fila"].isin(lotes_visibles)].copy()
 
+    # Distribuir kilos a través de semanas calendario hábiles
     def calcular_kilos_semanales(df_g):
         rows_dist = []
         for _, r in df_g.iterrows():
@@ -623,104 +711,43 @@ try:
 
     df_semanal_total = calcular_kilos_semanales(df_gantt_filtrado)
 
-    if len(lotes_visibles) == 0:
-        st.info("No hay despachos para mostrar con los filtros seleccionados.")
-
-    elif len(lotes_visibles) == 1:
-        # =========================================================
-        # VISTA A: 1 SOLO DESPACHO FILTRADO
-        # =========================================================
-        info_lote = df_mostrar.iloc[0]
-        id_sel = info_lote["Identificador de fila"]
-        df_gantt_ind = df_gantt_filtrado[df_gantt_filtrado["Identificador de fila"] == id_sel].copy()
-
-        g1, g2, g3, g4 = st.columns(4)
-        g1.metric("Proyecto / Subproyecto", f"{info_lote['Proyecto_Display']} | {info_lote['Subproyecto']}")
-        g2.metric("Fecha Programada", info_lote["Fecha Programada"])
-        g3.metric("Fecha Estimada Término", info_lote["Fecha Estimada Finalizar"])
-        g4.metric("Estado de Entrega", info_lote["Diagnostico"])
-
-        fig_ind = px.timeline(
-            df_gantt_ind,
-            x_start="Inicio",
-            x_end="Fin",
-            y="Proceso",
-            color="Proceso",
-            text="Texto_Simple",
-            category_orders={"Proceso": PROCESOS_GANTT},
-            color_discrete_map=COLOR_MAP_GANTT
-        )
-        fig_ind.update_yaxes(autorange="reversed")
-        fig_ind.update_layout(
-            height=380,
-            margin=dict(l=10, r=20, t=30, b=10),
-            xaxis_title="Calendario de Ejecución con Traslapes",
-            yaxis_title="Proceso",
-            showlegend=True,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-        )
-        st.plotly_chart(fig_ind, use_container_width=True)
-
+    # Diccionario pivoteado (Proceso, Semana) -> Kilos
+    if not df_semanal_total.empty:
+        piv_dict = df_semanal_total.groupby(["Proceso", "Semana"])["Kilos"].sum().to_dict()
+        min_semana = df_semanal_total["Semana"].min()
+        max_semana = df_semanal_total["Semana"].max()
     else:
-        # =========================================================
-        # VISTA B: CONSOLIDADO (MÚLTIPLES O TODOS LOS DESPACHOS)
-        # =========================================================
-        semanas_disp = sorted(list(df_semanal_total["Semana"].unique())) if not df_semanal_total.empty else ["2026-48"]
-        idx_def_sem = semanas_disp.index("2026-48") if "2026-48" in semanas_disp else 0
+        piv_dict = {}
+        min_semana = "2026-48"
+        max_semana = "2027-02"
 
-        c_w1, c_w2 = st.columns([2, 3])
-        with c_w1:
-            sem_foco = st.selectbox("📅 Auditar Kilos en Semana Específica:", semanas_disp, index=idx_def_sem)
+    # Asegurar que comience en 2026-48 o la mínima y cubra al menos hasta 2027-02 (7 semanas)
+    if "2026-48" < min_semana:
+        min_semana = "2026-48"
+    if "2027-02" > max_semana:
+        max_semana = "2027-02"
 
-        df_foco_sem = df_semanal_total[df_semanal_total["Semana"] == sem_foco] if not df_semanal_total.empty else pd.DataFrame()
-        kilos_foco_dict = df_foco_sem.groupby("Proceso")["Kilos"].sum().to_dict() if not df_foco_sem.empty else {}
+    semanas_cols = generar_semanas_consecutivas(min_semana, max_semana, min_count=7)
 
-        st.markdown(f"#### 📦 Kilos Totales Requeridos en la Semana **{sem_foco}** por Proceso")
-        cols_m = st.columns(7)
-        for i, proc in enumerate(PROCESOS_GANTT):
-            kg_sem_proc = kilos_foco_dict.get(proc, 0.0)
-            cols_m[i].metric(proc, f"{kg_sem_proc:,.0f} kg")
+    # Cálculo de "Cant. Días" por proceso
+    dias_calculados = {}
+    for proc in PROCESOS_GANTT:
+        kg_tot_proc = df_gantt_filtrado[df_gantt_filtrado["Proceso"] == proc]["Kilos"].sum() if not df_gantt_filtrado.empty else 0.0
+        if len(lotes_visibles) == 1 and not df_gantt_filtrado.empty:
+            sub_p = df_gantt_filtrado[df_gantt_filtrado["Proceso"] == proc]
+            dias_calculados[proc] = int(sub_p["Duracion"].values[0]) if not sub_p.empty else 0
+        else:
+            cap_d = capacidad_diaria_kg.get(proc, 1000.0)
+            dias_calculados[proc] = int(np.ceil(kg_tot_proc / cap_d)) if cap_d > 0 and kg_tot_proc > 0 else 0
 
-        # Gantt coloreado por PROCESO (Leyenda fija de 7 colores, sin saturación de proyectos)
-        st.markdown("#### 🗓️ Cronograma de Producción (Filtrado)")
-        fig_all = px.timeline(
-            df_gantt_filtrado[df_gantt_filtrado["Kilos"] > 0],
-            x_start="Inicio",
-            x_end="Fin",
-            y="Proceso",
-            color="Proceso",
-            text="Texto",
-            category_orders={"Proceso": PROCESOS_GANTT},
-            color_discrete_map=COLOR_MAP_GANTT,
-            hover_data=["Identificador de fila", "Subproyecto", "Proyecto_Display", "Kilos", "Duracion"]
-        )
-        fig_all.update_yaxes(autorange="reversed")
-        fig_all.update_layout(
-            height=460,
-            margin=dict(l=10, r=20, t=30, b=10),
-            xaxis_title="Horizonte Temporal de Producción",
-            yaxis_title="Proceso",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-        )
-        st.plotly_chart(fig_all, use_container_width=True)
-
-        # Gráfico de barras de carga en la semana foco
-        df_bar_sem = pd.DataFrame([
-            {"Proceso": p, "Kilos": kilos_foco_dict.get(p, 0.0)}
-            for p in PROCESOS_GANTT
-        ])
-        fig_bar_sem = px.bar(
-            df_bar_sem,
-            x="Proceso",
-            y="Kilos",
-            text_auto='.2s',
-            title=f"Volumen Total de Carga a Procesar en la Semana {sem_foco}",
-            color="Proceso",
-            category_orders={"Proceso": PROCESOS_GANTT},
-            color_discrete_map=COLOR_MAP_GANTT
-        )
-        fig_bar_sem.update_layout(height=320, showlegend=False, margin=dict(l=10, r=10, t=35, b=10))
-        st.plotly_chart(fig_bar_sem, use_container_width=True)
+    # Renderizar el cuadro idéntico al solicitado
+    html_cuadro = renderizar_cuadro_semanal_html(
+        piv_data=piv_dict,
+        dias_dict=dias_calculados,
+        semanas_cols=semanas_cols,
+        cap_semanal_dict=capacidad_semanal_kg
+    )
+    components.html(html_cuadro, height=360, scrolling=False)
 
     # Botón de descarga CSV
     st.download_button(
