@@ -38,6 +38,16 @@ PROCESOS_GANTT = [
     "Embalaje"
 ]
 
+COLOR_MAP_GANTT = {
+    "Ingeniería": "#102a45",
+    "CNCL": "#1f77b4",
+    "CNCPL": "#3b82f6",
+    "Soldadura": "#f97316",
+    "Fabricado": "#10b981",
+    "Galvanizado": "#8b5cf6",
+    "Embalaje": "#64748b"
+}
+
 DOTACION_BASE_DEFAULT = {
     "Ingeniería": 2, "CNCL": 4, "CNCPL": 4, 
     "Talón": 2, "DoblezL": 2, "Perforado": 3, "Armado Soldadura": 8, 
@@ -127,7 +137,7 @@ def normalizar_procesos(df_proc):
             
             kg_av = pd.to_numeric(fila.get(col_av, 0), errors='coerce') or 0 if col_av else 0
             
-            if proc == "Fabricado":
+            if proc in ["Fabricado", "Galvanizado", "Embalaje"]:
                 kg_necesidad = kg_total_proyecto
             else:
                 kg_est = pd.to_numeric(fila.get(col_est, 0), errors='coerce') or 0 if col_est else 0
@@ -262,6 +272,14 @@ try:
         col_id_fila = next((c for c in cols_backlog if "id" in c.lower() or "despacho" in c.lower()), cols_backlog[0])
 
     col_sub_backlog = next((c for c in cols_backlog if "sub-proyecto" in c.lower() or "subproyecto" in c.lower()), None)
+
+    # Detección de columnas de Proyecto / Nombre de Proyecto
+    col_proyecto = next((c for c in cols_backlog if c.lower().strip() in ["proyecto", "proyectos", "cod proyecto", "código proyecto"]), None)
+    if not col_proyecto:
+        col_proyecto = next((c for c in cols_backlog if "proyecto" in c.lower() and "sub" not in c.lower()), None)
+
+    col_nom_proyecto = next((c for c in cols_backlog if any(k in c.lower() for k in ["nombre proyecto", "nombre del proyecto", "nom_proyecto", "nombre de proyecto", "obra", "cliente"])), None)
+
     col_fecha_prog = next((c for c in cols_backlog if "programad" in c.lower() and "fecha" in c.lower()), None)
     if not col_fecha_prog:
         col_fecha_prog = next((c for c in cols_backlog if "fecha" in c.lower()), None)
@@ -289,7 +307,22 @@ try:
     df_backlog_activo["Mes_Entrega"] = df_backlog_activo["Fecha_DT"].dt.strftime("%Y-%m")
     df_backlog_activo["Kg_Prog_Num"] = pd.to_numeric(df_backlog_activo[col_kg_prog], errors='coerce').fillna(0)
 
-    # Filtro de Horizonte
+    # Identificación de Proyecto y Nombre
+    if col_proyecto:
+        df_backlog_activo["Proyecto_Codigo"] = df_backlog_activo[col_proyecto].fillna("").astype(str).str.strip()
+    else:
+        df_backlog_activo["Proyecto_Codigo"] = df_backlog_activo[col_sub_backlog].apply(
+            lambda s: "-".join(str(s).split("-")[:2]) if len(str(s).split("-")) >= 2 else str(s)
+        )
+
+    if col_nom_proyecto:
+        df_backlog_activo["Proyecto_Nombre"] = df_backlog_activo[col_nom_proyecto].fillna("").astype(str).str.strip()
+        df_backlog_activo["Proyecto_Display"] = df_backlog_activo["Proyecto_Codigo"] + " - " + df_backlog_activo["Proyecto_Nombre"]
+    else:
+        df_backlog_activo["Proyecto_Nombre"] = df_backlog_activo["Proyecto_Codigo"]
+        df_backlog_activo["Proyecto_Display"] = df_backlog_activo["Proyecto_Codigo"]
+
+    # Filtro de Horizonte Temporal
     st.sidebar.markdown("---")
     st.sidebar.header("📅 Filtro de Horizonte")
     meses_disponibles = sorted(df_backlog_activo["Mes_Entrega"].unique().tolist())
@@ -357,6 +390,8 @@ try:
             id_despacho = str(lote[col_id_fila])
             f_prog = lote["Fecha_DT"]
             kg_lote = lote["Kg_Prog_Num"]
+            proy_display = str(lote["Proyecto_Display"])
+            proy_nombre = str(lote["Proyecto_Nombre"])
             factor = (kg_lote / tot_prog_subp) if tot_prog_subp > 0 else (1.0 / len(lotes_subp))
 
             kg_orden_lote = kg_orden_subp * factor
@@ -429,7 +464,6 @@ try:
                     estado_desv = f"🟢 A Tiempo ({holgura}d holgura)"
                     base_start = fecha_inicio_guia
 
-            # Tiempos de los 7 procesos para el Gantt
             procs_gantt_lote = [
                 ("Ingeniería", 0.0, t_ing, kg_por_cargar_ing),
                 ("CNCL", t_corte_start, t_cncl_end, kg_cncl),
@@ -448,6 +482,8 @@ try:
                 gantt_records_all.append({
                     "Identificador de fila": id_despacho,
                     "Subproyecto": subp,
+                    "Proyecto_Display": proy_display,
+                    "Proyecto_Nombre": proy_nombre,
                     "Proceso": p_nombre,
                     "Inicio": st_dt,
                     "Fin": en_dt,
@@ -460,6 +496,8 @@ try:
             filas_tabla_despachos.append({
                 "Identificador de fila": id_despacho,
                 "Subproyecto": subp,
+                "Proyecto_Display": proy_display,
+                "Proyecto_Nombre": proy_nombre,
                 "Kg Orden Proceder": kg_orden_lote,
                 "Kg por cargar (Ing)": kg_por_cargar_ing,
                 "Kg por procesar CNCL": kg_cncl,
@@ -479,35 +517,63 @@ try:
     df_gantt_total = pd.DataFrame(gantt_records_all)
 
     # -------------------------------------------------------------
-    # 5. VISUALIZACIÓN EN PANTALLA: TABLA DE CONTROL
+    # 5. FILTROS EN CASCADA UNIFICADOS
     # -------------------------------------------------------------
-    total_lotes = len(df_resultado)
-    lotes_atrasados = len(df_resultado[df_resultado["Desviacion_Dias"] > 0])
-    lotes_ok = total_lotes - lotes_atrasados
-    max_retraso = df_resultado["Desviacion_Dias"].max() if not df_resultado.empty else 0
+    col_f1, col_f2, col_f3, col_f4 = st.columns([2, 2, 2, 1.2])
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Lotes Evaluados", total_lotes)
-    c2.metric("Lotes en Fecha", lotes_ok)
-    c3.metric("Lotes Desviados (Retraso)", lotes_atrasados, delta=f"-{lotes_atrasados}" if lotes_atrasados > 0 else "0", delta_color="inverse")
-    c4.metric("Máximo Retraso Detectado", f"+{max_retraso} días" if max_retraso > 0 else "0 días", delta_color="inverse")
-
-    st.markdown("---")
-
-    col_f1, col_f2 = st.columns([2, 3])
     with col_f1:
-        filtro_subp = st.multiselect("Filtrar por Subproyecto:", sorted(df_resultado["Subproyecto"].unique()))
-    with col_f2:
-        solo_atrasados = st.checkbox("Mostrar únicamente lotes con fecha desviada (retraso)")
+        proyectos_disponibles = sorted([p for p in df_resultado["Proyecto_Display"].unique() if p.strip()])
+        filtro_proy = st.multiselect("Filtrar por Nombre / Proyecto:", proyectos_disponibles, placeholder="Todos los proyectos")
 
+    # Subproyectos filtrados dinámicamente según proyecto
+    df_sub_pool = df_resultado if not filtro_proy else df_resultado[df_resultado["Proyecto_Display"].isin(filtro_proy)]
+    subproyectos_disponibles = sorted([s for s in df_sub_pool["Subproyecto"].unique() if s.strip()])
+
+    with col_f2:
+        filtro_subp = st.multiselect("Filtrar por Subproyecto:", subproyectos_disponibles, placeholder="Todos los subproyectos")
+
+    # Despachos filtrados dinámicamente según proyecto y subproyecto
+    df_disp_pool = df_sub_pool if not filtro_subp else df_sub_pool[df_sub_pool["Subproyecto"].isin(filtro_subp)]
+    despachos_disponibles = sorted([d for d in df_disp_pool["Identificador de fila"].unique() if d.strip()])
+
+    with col_f3:
+        filtro_despacho = st.multiselect("Filtrar por ID Despacho:", despachos_disponibles, placeholder="Todos los despachos")
+
+    with col_f4:
+        st.write("")
+        st.write("")
+        solo_atrasados = st.checkbox("Solo con retraso")
+
+    # Aplicar filtros unificados
     df_mostrar = df_resultado.copy()
+    if filtro_proy:
+        df_mostrar = df_mostrar[df_mostrar["Proyecto_Display"].isin(filtro_proy)]
     if filtro_subp:
         df_mostrar = df_mostrar[df_mostrar["Subproyecto"].isin(filtro_subp)]
+    if filtro_despacho:
+        df_mostrar = df_mostrar[df_mostrar["Identificador de fila"].isin(filtro_despacho)]
     if solo_atrasados:
         df_mostrar = df_mostrar[df_mostrar["Desviacion_Dias"] > 0]
 
     df_mostrar = df_mostrar.sort_values(by="Fecha_DT")
 
+    # -------------------------------------------------------------
+    # 6. MÉTRICAS EJECUTIVAS
+    # -------------------------------------------------------------
+    total_lotes = len(df_mostrar)
+    lotes_atrasados = len(df_mostrar[df_mostrar["Desviacion_Dias"] > 0])
+    lotes_ok = total_lotes - lotes_atrasados
+    max_retraso = df_mostrar["Desviacion_Dias"].max() if not df_mostrar.empty else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Lotes en Vista", total_lotes)
+    c2.metric("Lotes en Fecha", lotes_ok)
+    c3.metric("Lotes Desviados", lotes_atrasados, delta=f"-{lotes_atrasados}" if lotes_atrasados > 0 else "0", delta_color="inverse")
+    c4.metric("Máximo Retraso", f"+{max_retraso} días" if max_retraso > 0 else "0 días", delta_color="inverse")
+
+    st.markdown("---")
+
+    # Renderizar la tabla principal
     totales_dict = {
         "orden": df_mostrar["Kg Orden Proceder"].sum(),
         "ing": df_mostrar["Kg por cargar (Ing)"].sum(),
@@ -519,32 +585,20 @@ try:
         "emb": df_mostrar["Kg por Embalar"].sum(),
     }
 
-    # Renderizar la tabla principal
     tabla_html = renderizar_tabla_html(df_mostrar, totales_dict)
     components.html(tabla_html, height=580, scrolling=False)
 
     # -------------------------------------------------------------
-    # 6. SECCIÓN CARTA GANTT DE CARGA (7 PROCESOS)
+    # 7. CARTA GANTT DE CARGA (SINCRONIZADA CON LOS FILTROS)
     # -------------------------------------------------------------
     st.markdown("---")
     st.markdown("### 📊 Carta Gantt de Carga & Secuencia de Fabricación")
-    st.caption("Visualiza el cronograma dinámico con traslapes y kilos asignados para los 7 procesos clave.")
+    st.caption("Los colores representan los 7 procesos clave para mantener una leyenda limpia y libre de saturación.")
 
-    # Lista interactiva para seleccionar despacho
-    lista_opciones_despacho = ["Todos los Despachos (Consolidado de Planta)"] + [
-        f"{r['Identificador de fila']} | {r['Subproyecto']} (F. Prog: {r['Fecha Programada']})"
-        for _, r in df_mostrar.iterrows()
-    ]
+    # Sincronización estricta: Gantt toma únicamente los lotes visibles tras filtrar
+    lotes_visibles = df_mostrar["Identificador de fila"].unique()
+    df_gantt_filtrado = df_gantt_total[df_gantt_total["Identificador de fila"].isin(lotes_visibles)].copy()
 
-    c_gantt1, c_gantt2 = st.columns([3, 2])
-    with c_gantt1:
-        opcion_despacho = st.selectbox(
-            "🔍 Selecciona un Despacho para auditar su Carta Gantt (o deja en 'Consolidado de Planta'):",
-            lista_opciones_despacho,
-            index=0
-        )
-
-    # Cálculo de kilos distribuidos por semana para la vista consolidada
     def calcular_kilos_semanales(df_g):
         rows_dist = []
         for _, r in df_g.iterrows():
@@ -567,40 +621,34 @@ try:
                 rows_dist.append({"Semana": wk, "Proceso": r["Proceso"], "Kilos": (cnt / total_days) * kg})
         return pd.DataFrame(rows_dist)
 
-    df_semanal_total = calcular_kilos_semanales(df_gantt_total)
+    df_semanal_total = calcular_kilos_semanales(df_gantt_filtrado)
 
-    if opcion_despacho != "Todos los Despachos (Consolidado de Planta)":
-        # =========================================================
-        # VISTA A: GANTT INDIVIDUAL POR DESPACHO
-        # =========================================================
-        id_sel = opcion_despacho.split(" | ")[0].strip()
-        info_lote_sel = df_mostrar[df_mostrar["Identificador de fila"] == id_sel].iloc[0]
-        df_gantt_ind = df_gantt_total[df_gantt_total["Identificador de fila"] == id_sel].copy()
+    if len(lotes_visibles) == 0:
+        st.info("No hay despachos para mostrar con los filtros seleccionados.")
 
-        # Resumen del lote seleccionado
+    elif len(lotes_visibles) == 1:
+        # =========================================================
+        # VISTA A: 1 SOLO DESPACHO FILTRADO
+        # =========================================================
+        info_lote = df_mostrar.iloc[0]
+        id_sel = info_lote["Identificador de fila"]
+        df_gantt_ind = df_gantt_filtrado[df_gantt_filtrado["Identificador de fila"] == id_sel].copy()
+
         g1, g2, g3, g4 = st.columns(4)
-        g1.metric("Subproyecto", info_lote_sel["Subproyecto"])
-        g2.metric("Fecha Programada", info_lote_sel["Fecha Programada"])
-        g3.metric("Fecha Estimada Término", info_lote_sel["Fecha Estimada Finalizar"])
-        g4.metric("Estado de Entrega", info_lote_sel["Diagnostico"])
+        g1.metric("Proyecto / Subproyecto", f"{info_lote['Proyecto_Display']} | {info_lote['Subproyecto']}")
+        g2.metric("Fecha Programada", info_lote["Fecha Programada"])
+        g3.metric("Fecha Estimada Término", info_lote["Fecha Estimada Finalizar"])
+        g4.metric("Estado de Entrega", info_lote["Diagnostico"])
 
         fig_ind = px.timeline(
             df_gantt_ind,
             x_start="Inicio",
             x_end="Fin",
             y="Proceso",
-            text="Texto_Simple",
             color="Proceso",
+            text="Texto_Simple",
             category_orders={"Proceso": PROCESOS_GANTT},
-            color_discrete_map={
-                "Ingeniería": "#102a45",
-                "CNCL": "#1f77b4",
-                "CNCPL": "#aec7e8",
-                "Soldadura": "#ff7f0e",
-                "Fabricado": "#2ca02c",
-                "Galvanizado": "#9467bd",
-                "Embalaje": "#8c564b"
-            }
+            color_discrete_map=COLOR_MAP_GANTT
         )
         fig_ind.update_yaxes(autorange="reversed")
         fig_ind.update_layout(
@@ -608,43 +656,43 @@ try:
             margin=dict(l=10, r=20, t=30, b=10),
             xaxis_title="Calendario de Ejecución con Traslapes",
             yaxis_title="Proceso",
-            showlegend=False
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
         st.plotly_chart(fig_ind, use_container_width=True)
 
     else:
         # =========================================================
-        # VISTA B: GANTT CONSOLIDADO + KILOS POR PROCESO EN SEMANA
+        # VISTA B: CONSOLIDADO (MÚLTIPLES O TODOS LOS DESPACHOS)
         # =========================================================
         semanas_disp = sorted(list(df_semanal_total["Semana"].unique())) if not df_semanal_total.empty else ["2026-48"]
         idx_def_sem = semanas_disp.index("2026-48") if "2026-48" in semanas_disp else 0
 
-        with c_gantt2:
+        c_w1, c_w2 = st.columns([2, 3])
+        with c_w1:
             sem_foco = st.selectbox("📅 Auditar Kilos en Semana Específica:", semanas_disp, index=idx_def_sem)
 
-        # Matriz pivoteada de kilos en esa semana
-        df_foco_sem = df_semanal_total[df_semanal_total["Semana"] == sem_foco]
-        kilos_foco_dict = df_foco_sem.groupby("Proceso")["Kilos"].sum().to_dict()
+        df_foco_sem = df_semanal_total[df_semanal_total["Semana"] == sem_foco] if not df_semanal_total.empty else pd.DataFrame()
+        kilos_foco_dict = df_foco_sem.groupby("Proceso")["Kilos"].sum().to_dict() if not df_foco_sem.empty else {}
 
         st.markdown(f"#### 📦 Kilos Totales Requeridos en la Semana **{sem_foco}** por Proceso")
-        
-        # 7 Métricas alineadas
         cols_m = st.columns(7)
         for i, proc in enumerate(PROCESOS_GANTT):
             kg_sem_proc = kilos_foco_dict.get(proc, 0.0)
             cols_m[i].metric(proc, f"{kg_sem_proc:,.0f} kg")
 
-        # Gráfico Gantt consolidado de todos los lotes
-        st.markdown("#### 🗓️ Cronograma Consolidado de Producción (Todos los Lotes)")
+        # Gantt coloreado por PROCESO (Leyenda fija de 7 colores, sin saturación de proyectos)
+        st.markdown("#### 🗓️ Cronograma de Producción (Filtrado)")
         fig_all = px.timeline(
-            df_gantt_total[df_gantt_total["Kilos"] > 0],
+            df_gantt_filtrado[df_gantt_filtrado["Kilos"] > 0],
             x_start="Inicio",
             x_end="Fin",
             y="Proceso",
-            color="Subproyecto",
+            color="Proceso",
             text="Texto",
             category_orders={"Proceso": PROCESOS_GANTT},
-            hover_data=["Identificador de fila", "Subproyecto", "Kilos", "Duracion"]
+            color_discrete_map=COLOR_MAP_GANTT,
+            hover_data=["Identificador de fila", "Subproyecto", "Proyecto_Display", "Kilos", "Duracion"]
         )
         fig_all.update_yaxes(autorange="reversed")
         fig_all.update_layout(
@@ -669,7 +717,7 @@ try:
             title=f"Volumen Total de Carga a Procesar en la Semana {sem_foco}",
             color="Proceso",
             category_orders={"Proceso": PROCESOS_GANTT},
-            color_discrete_sequence=["#102a45", "#1f77b4", "#aec7e8", "#ff7f0e", "#2ca02c", "#9467bd", "#8c564b"]
+            color_discrete_map=COLOR_MAP_GANTT
         )
         fig_bar_sem.update_layout(height=320, showlegend=False, margin=dict(l=10, r=10, t=35, b=10))
         st.plotly_chart(fig_bar_sem, use_container_width=True)
