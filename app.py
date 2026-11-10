@@ -28,6 +28,16 @@ PROCESOS_LINEA = [
     "Embalaje"
 ]
 
+PROCESOS_GANTT = [
+    "Ingeniería",
+    "CNCL",
+    "CNCPL",
+    "Soldadura",
+    "Fabricado",
+    "Galvanizado",
+    "Embalaje"
+]
+
 DOTACION_BASE_DEFAULT = {
     "Ingeniería": 2, "CNCL": 4, "CNCPL": 4, 
     "Talón": 2, "DoblezL": 2, "Perforado": 3, "Armado Soldadura": 8, 
@@ -191,7 +201,7 @@ def renderizar_tabla_html(df_mostrar, totales):
 <meta charset="utf-8">
 <style>
 body {{ margin:0; padding:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
-.tabla-container {{ overflow:auto; max-height:640px; border:1px solid #ccc; border-radius:4px; }}
+.tabla-container {{ overflow:auto; max-height:560px; border:1px solid #ccc; border-radius:4px; }}
 table {{ width:100%; border-collapse:collapse; font-size:12px; }}
 thead th {{ background-color:#fce5cd; color:#333; position:sticky; top:0; z-index:5; border-bottom:2px solid #ccc; font-weight:600; text-align:center; }}
 </style>
@@ -231,7 +241,7 @@ st.sidebar.header("⚙️ Parámetros de Operación")
 horas_sem = st.sidebar.number_input("Horas turno / semana por operario", value=44, step=1)
 eficiencia = st.sidebar.slider("Eficiencia Operativa / OEE (%)", 50, 100, 85) / 100.0
 
-st.title("📋 Control de Despachos: Desviación & Fecha Estimada de Entrega")
+st.title("📋 Control de Despachos & Carta Gantt de Carga")
 
 if st.button("🔄 Refrescar Datos Smartsheet"):
     st.cache_data.clear()
@@ -325,6 +335,7 @@ try:
 
     hoy = pd.Timestamp.now().normalize()
     filas_tabla_despachos = []
+    gantt_records_all = []
 
     for subp in subproyectos_horizonte:
         lotes_subp = df_backlog_horizonte[df_backlog_horizonte[col_sub_backlog] == subp].sort_values("Fecha_DT")
@@ -402,21 +413,49 @@ try:
                 fecha_estimada_final = f_prog
                 desviacion_dias = 0
                 estado_desv = "🟢 Completado"
+                base_start = f_prog
             else:
                 fecha_inicio_guia = f_prog - pd.offsets.BDay(dias_habiles_totales)
 
                 if fecha_inicio_guia < hoy:
                     fecha_estimada_final = hoy + pd.offsets.BDay(dias_habiles_totales)
                     desviacion_dias = (fecha_estimada_final - f_prog).days
-                    if desviacion_dias > 0:
-                        estado_desv = f"🔴 Retraso (+{desviacion_dias}d)"
-                    else:
-                        estado_desv = "🟡 Al Límite"
+                    estado_desv = f"🔴 Retraso (+{desviacion_dias}d)" if desviacion_dias > 0 else "🟡 Al Límite"
+                    base_start = hoy
                 else:
                     fecha_estimada_final = f_prog
                     holgura = (fecha_inicio_guia - hoy).days
                     desviacion_dias = 0
                     estado_desv = f"🟢 A Tiempo ({holgura}d holgura)"
+                    base_start = fecha_inicio_guia
+
+            # Tiempos de los 7 procesos para el Gantt
+            procs_gantt_lote = [
+                ("Ingeniería", 0.0, t_ing, kg_por_cargar_ing),
+                ("CNCL", t_corte_start, t_cncl_end, kg_cncl),
+                ("CNCPL", t_corte_start, t_cncpl_end, kg_cncpl),
+                ("Soldadura", t_sold_start, t_sold_end, kg_soldadura),
+                ("Fabricado", t_fab_start, t_fab_end, kg_fabricado),
+                ("Galvanizado", t_galv_start, t_galv_end, kg_galvanizado),
+                ("Embalaje", t_emb_start, t_emb_end, kg_embalaje),
+            ]
+
+            for p_nombre, s_off, e_off, kg_val in procs_gantt_lote:
+                dur_p = max(1, int(np.ceil(e_off - s_off))) if kg_val > 0 else 0
+                st_dt = base_start + pd.offsets.BDay(int(np.floor(s_off)))
+                en_dt = st_dt + pd.offsets.BDay(dur_p) if dur_p > 0 else st_dt + pd.offsets.BDay(1)
+                
+                gantt_records_all.append({
+                    "Identificador de fila": id_despacho,
+                    "Subproyecto": subp,
+                    "Proceso": p_nombre,
+                    "Inicio": st_dt,
+                    "Fin": en_dt,
+                    "Duracion": dur_p,
+                    "Kilos": kg_val,
+                    "Texto": f"{id_despacho}: {kg_val:,.0f} kg ({dur_p}d)" if kg_val > 0 else f"{id_despacho}: 0 kg",
+                    "Texto_Simple": f"{kg_val:,.0f} kg ({dur_p}d)" if kg_val > 0 else "0 kg (Listo)"
+                })
 
             filas_tabla_despachos.append({
                 "Identificador de fila": id_despacho,
@@ -437,9 +476,10 @@ try:
             })
 
     df_resultado = pd.DataFrame(filas_tabla_despachos)
+    df_gantt_total = pd.DataFrame(gantt_records_all)
 
     # -------------------------------------------------------------
-    # 5. VISUALIZACIÓN EN PANTALLA
+    # 5. VISUALIZACIÓN EN PANTALLA: TABLA DE CONTROL
     # -------------------------------------------------------------
     total_lotes = len(df_resultado)
     lotes_atrasados = len(df_resultado[df_resultado["Desviacion_Dias"] > 0])
@@ -447,47 +487,4 @@ try:
     max_retraso = df_resultado["Desviacion_Dias"].max() if not df_resultado.empty else 0
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Lotes Evaluados", total_lotes)
-    c2.metric("Lotes en Fecha", lotes_ok)
-    c3.metric("Lotes Desviados (Retraso)", lotes_atrasados, delta=f"-{lotes_atrasados}" if lotes_atrasados > 0 else "0", delta_color="inverse")
-    c4.metric("Máximo Retraso Detectado", f"+{max_retraso} días" if max_retraso > 0 else "0 días", delta_color="inverse")
-
-    st.markdown("---")
-
-    col_f1, col_f2 = st.columns([2, 3])
-    with col_f1:
-        filtro_subp = st.multiselect("Filtrar por Subproyecto:", sorted(df_resultado["Subproyecto"].unique()))
-    with col_f2:
-        solo_atrasados = st.checkbox("Mostrar únicamente lotes con fecha desviada (retraso)")
-
-    df_mostrar = df_resultado.copy()
-    if filtro_subp:
-        df_mostrar = df_mostrar[df_mostrar["Subproyecto"].isin(filtro_subp)]
-    if solo_atrasados:
-        df_mostrar = df_mostrar[df_mostrar["Desviacion_Dias"] > 0]
-
-    df_mostrar = df_mostrar.sort_values(by="Fecha_DT")
-
-    totales_dict = {
-        "orden": df_mostrar["Kg Orden Proceder"].sum(),
-        "ing": df_mostrar["Kg por cargar (Ing)"].sum(),
-        "cncl": df_mostrar["Kg por procesar CNCL"].sum(),
-        "cncpl": df_mostrar["Kg por procesar CNCPL"].sum(),
-        "sold": df_mostrar["Kg por procesar Soldadura"].sum(),
-        "fab": df_mostrar["Kg por procesar Fabricado"].sum(),
-        "galv": df_mostrar["Kg por galvanizar"].sum(),
-        "emb": df_mostrar["Kg por Embalar"].sum(),
-    }
-
-    tabla_html = renderizar_tabla_html(df_mostrar, totales_dict)
-    components.html(tabla_html, height=660, scrolling=False)
-
-    st.download_button(
-        label="📥 Descargar Plan de Despachos (CSV)",
-        data=df_resultado.to_csv(index=False).encode('utf-8'),
-        file_name=f"plan_despachos_estimados_{datetime.now().strftime('%Y%m%d')}.csv",
-        mime="text/csv"
-    )
-
-except Exception as e:
-    st.error(f"Error procesando los datos: {e}")
+    c1.metric("Lotes Evaluados", total
