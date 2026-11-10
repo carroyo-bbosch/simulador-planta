@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import smartsheet
 import re
@@ -26,8 +27,6 @@ PROCESOS_LINEA = [
     "Galvanizado",
     "Embalaje"
 ]
-
-PROCESOS_MACRO_FINALES = ["Fabricado", "Galvanizado", "Embalaje"]
 
 DOTACION_BASE_DEFAULT = {
     "Ingeniería": 2, "CNCL": 4, "CNCPL": 4, 
@@ -118,7 +117,8 @@ def normalizar_procesos(df_proc):
             
             kg_av = pd.to_numeric(fila.get(col_av, 0), errors='coerce') or 0 if col_av else 0
             
-            if proc in PROCESOS_MACRO_FINALES:
+            # Para Fabricado toma la meta total del proyecto; Galvanizado y Embalaje se fijan por despacho
+            if proc == "Fabricado":
                 kg_necesidad = kg_total_proyecto
             else:
                 kg_est = pd.to_numeric(fila.get(col_est, 0), errors='coerce') or 0 if col_est else 0
@@ -156,9 +156,14 @@ try:
         df_procesos_raw = cargar_hoja(st.secrets["SHEET_ID_PROCESOS"])
         df_prod_raw = cargar_hoja(st.secrets["SHEET_ID_PRODUCTIVIDAD"])
 
-    # Filtro Backlog Activo
+    # Detección de columnas de Backlog con prioridad a "Identificador de fila"
     cols_backlog = df_backlog_raw.columns.tolist()
-    col_id_fila = next((c for c in cols_backlog if "identificador" in c.lower() or "despacho" in c.lower()), cols_backlog[0])
+    col_id_fila = next((c for c in cols_backlog if "identificador" in c.lower() and "fila" in c.lower()), None)
+    if not col_id_fila:
+        col_id_fila = next((c for c in cols_backlog if "identificador" in c.lower()), None)
+    if not col_id_fila:
+        col_id_fila = next((c for c in cols_backlog if "id" in c.lower() or "despacho" in c.lower()), cols_backlog[0])
+
     col_sub_backlog = next((c for c in cols_backlog if "sub-proyecto" in c.lower() or "subproyecto" in c.lower()), None)
     col_fecha_prog = next((c for c in cols_backlog if "programad" in c.lower() and "fecha" in c.lower()), None)
     if not col_fecha_prog:
@@ -224,7 +229,6 @@ try:
     # -------------------------------------------------------------
     # 3. MOTOR DE CÁLCULO: CAPACIDADES DIARIAS Y RUTA CRÍTICA
     # -------------------------------------------------------------
-    # Capacidad Diaria en Kg (semana de 5.5 días laborales promedio)
     capacidad_diaria_kg = {}
     for proc in PROCESOS_LINEA:
         oper = DOTACION_BASE_DEFAULT.get(proc, 4)
@@ -244,6 +248,7 @@ try:
         kg_orden_subp = info_ing["Orden"]
         kg_carg_subp = info_ing["Cargados"]
 
+        # Pool de avances reales registrados en el subproyecto para consumo FIFO
         av_disponible = {}
         req_total_subp = {}
         for proc in PROCESOS_LINEA:
@@ -257,66 +262,58 @@ try:
             kg_lote = lote["Kg_Prog_Num"]
             factor = (kg_lote / tot_prog_subp) if tot_prog_subp > 0 else (1.0 / len(lotes_subp))
 
-            # Prorrateos
             kg_orden_lote = kg_orden_subp * factor
             kg_carg_lote = kg_carg_subp * factor
 
-            # Kilos pendientes por proceso para este lote
             pends_lote = {}
             dias_proc = {}
 
             for proc in PROCESOS_LINEA:
-                req_lp = req_total_subp[proc] * factor
+                # REGLA CLAVE: Para Galvanizado y Embalaje, la meta requerida es exactamente los kilos programados del despacho
+                if proc in ["Galvanizado", "Embalaje"]:
+                    req_lp = kg_lote
+                else:
+                    req_lp = req_total_subp[proc] * factor
+
                 av_lp = min(req_lp, av_disponible[proc])
                 av_disponible[proc] -= av_lp
                 pend_lp = max(0.0, req_lp - av_lp)
                 pends_lote[proc] = pend_lp
                 
-                # Días requeridos por este proceso para terminar sus kilos
                 dias_proc[proc] = pend_lp / capacidad_diaria_kg[proc]
 
-            # Kilos específicos solicitados
+            # Kilos de las columnas específicas solicitadas
             kg_por_cargar_ing = max(0.0, kg_orden_lote - kg_carg_lote)
             kg_cncl = pends_lote.get("CNCL", 0.0)
             kg_cncpl = pends_lote.get("CNCPL", 0.0)
-            # Soldadura (incluye Armado Soldadura + Soldadura)
             kg_soldadura = max(pends_lote.get("Armado Soldadura", 0.0), pends_lote.get("Soldadura", 0.0))
             kg_fabricado = pends_lote.get("Fabricado", 0.0)
             kg_galvanizado = pends_lote.get("Galvanizado", 0.0)
             kg_embalaje = pends_lote.get("Embalaje", 0.0)
 
-            # -------------------------------------------------------------
-            # MODELO DE TRASLAPE Y RUTA CRÍTICA (DÍAS HÁBILES)
-            # -------------------------------------------------------------
+            # Modelo de traslapes y ruta crítica (días hábiles)
             t_ing = dias_proc.get("Ingeniería", 0.0)
-            
-            # Corte inicia al 50% de Ingeniería
             t_corte_start = t_ing * 0.5
             t_cncl_end = t_corte_start + dias_proc.get("CNCL", 0.0)
             t_cncpl_end = t_corte_start + dias_proc.get("CNCPL", 0.0)
 
-            # Soldadura inicia cuando corte lleva 25%
             t_sold_start = max(t_corte_start + 0.25 * dias_proc.get("CNCL", 0.0),
                                t_corte_start + 0.25 * dias_proc.get("CNCPL", 0.0))
             t_sold_dur = dias_proc.get("Armado Soldadura", 0.0) + dias_proc.get("Soldadura", 0.0)
             t_sold_end = t_sold_start + t_sold_dur
 
-            # Fabricado inicia al 50% de soldadura
             t_fab_start = t_sold_start + 0.5 * t_sold_dur
             t_fab_end = t_fab_start + dias_proc.get("Fabricado", 0.0)
 
-            # Galvanizado inicia al 80% de fabricado
             t_galv_start = t_fab_start + 0.8 * dias_proc.get("Fabricado", 0.0)
             t_galv_end = t_galv_start + dias_proc.get("Galvanizado", 0.0)
 
-            # Embalaje inicia al 30% de galvanizado
             t_emb_start = t_galv_start + 0.3 * dias_proc.get("Galvanizado", 0.0)
             t_emb_end = t_emb_start + dias_proc.get("Embalaje", 0.0)
 
-            # Total de días hábiles requeridos de fabricación
             dias_habiles_totales = int(np.ceil(max(0.0, t_emb_end)))
 
-            # Cálculo de Fechas (Programación hacia atrás y hacia adelante)
+            # Cálculo de fechas con corrimiento dinámico
             if dias_habiles_totales == 0:
                 fecha_inicio_guia = f_prog
                 fecha_estimada_final = f_prog
@@ -326,7 +323,6 @@ try:
                 fecha_inicio_guia = f_prog - pd.offsets.BDay(dias_habiles_totales)
 
                 if fecha_inicio_guia < hoy:
-                    # Debió haber empezado antes de hoy: se corre la producción desde hoy
                     fecha_estimada_final = hoy + pd.offsets.BDay(dias_habiles_totales)
                     desviacion_dias = (fecha_estimada_final - f_prog).days
                     if desviacion_dias > 0:
@@ -334,14 +330,13 @@ try:
                     else:
                         estado_desv = "🟡 Al Límite"
                 else:
-                    # Hay holgura suficiente para cumplir la fecha
                     fecha_estimada_final = f_prog
                     holgura = (fecha_inicio_guia - hoy).days
                     desviacion_dias = 0
                     estado_desv = f"🟢 A Tiempo ({holgura}d holgura)"
 
             filas_tabla_despachos.append({
-                "Despacho": id_despacho,
+                "Identificador de fila": id_despacho,
                 "Subproyecto": subp,
                 "Kg Orden Proceder": kg_orden_lote,
                 "Kg por cargar (Ing)": kg_por_cargar_ing,
@@ -355,8 +350,7 @@ try:
                 "Fecha Estimada Finalizar": fecha_estimada_final.strftime("%d/%m/%Y"),
                 "Fecha_DT": f_prog,
                 "Desviacion_Dias": desviacion_dias,
-                "Diagnostico": estado_desv,
-                "Dias_Habiles_Req": dias_habiles_totales
+                "Diagnostico": estado_desv
             })
 
     df_resultado = pd.DataFrame(filas_tabla_despachos)
@@ -364,7 +358,6 @@ try:
     # -------------------------------------------------------------
     # 4. VISUALIZACIÓN EN PANTALLA
     # -------------------------------------------------------------
-    # Métricas ejecutivas
     total_lotes = len(df_resultado)
     lotes_atrasados = len(df_resultado[df_resultado["Desviacion_Dias"] > 0])
     lotes_ok = total_lotes - lotes_atrasados
@@ -378,7 +371,6 @@ try:
 
     st.markdown("---")
 
-    # Controles de filtro rápido sobre la tabla
     col_f1, col_f2 = st.columns([2, 3])
     with col_f1:
         filtro_subp = st.multiselect("Filtrar por Subproyecto:", sorted(df_resultado["Subproyecto"].unique()))
@@ -391,10 +383,9 @@ try:
     if solo_atrasados:
         df_mostrar = df_mostrar[df_mostrar["Desviacion_Dias"] > 0]
 
-    # Ordenar por fecha programada
     df_mostrar = df_mostrar.sort_values(by="Fecha_DT")
 
-    # Construcción de la tabla con estilos CSS
+    # Totales para el pie de tabla
     tot_orden = df_mostrar["Kg Orden Proceder"].sum()
     tot_ing = df_mostrar["Kg por cargar (Ing)"].sum()
     tot_cncl = df_mostrar["Kg por procesar CNCL"].sum()
@@ -411,16 +402,16 @@ try:
         
         filas_html.append(f"""
         <tr style="background-color:{bg}; border-bottom:1px solid #eee;">
-            <td style="padding:8px 6px; text-align:left; font-weight:600; position:sticky; left:0; background-color:{bg}; z-index:2; border-right:1px solid #ddd;">{r['Despacho']}</td>
-            <td style="padding:8px 6px; text-align:left; position:sticky; left:110px; background-color:{bg}; z-index:2; border-right:1px solid #ddd;">{r['Subproyecto']}</td>
+            <td style="padding:8px 6px; text-align:left; font-weight:600; position:sticky; left:0; background-color:{bg}; z-index:2; border-right:1px solid #ddd;">{r['Identificador de fila']}</td>
+            <td style="padding:8px 6px; text-align:left; position:sticky; left:130px; background-color:{bg}; z-index:2; border-right:1px solid #ddd;">{r['Subproyecto']}</td>
             <td style="padding:8px 6px; text-align:right;">{r['Kg Orden Proceder']:,.0f}</td>
             <td style="padding:8px 6px; text-align:right; font-weight:500; color:{'#d62728' if r['Kg por cargar (Ing)'] > 0 else '#555'};">{r['Kg por cargar (Ing)']:,.0f}</td>
             <td style="padding:8px 6px; text-align:right;">{r['Kg por procesar CNCL']:,.0f}</td>
             <td style="padding:8px 6px; text-align:right;">{r['Kg por procesar CNCPL']:,.0f}</td>
             <td style="padding:8px 6px; text-align:right;">{r['Kg por procesar Soldadura']:,.0f}</td>
             <td style="padding:8px 6px; text-align:right;">{r['Kg por procesar Fabricado']:,.0f}</td>
-            <td style="padding:8px 6px; text-align:right;">{r['Kg por galvanizar']:,.0f}</td>
-            <td style="padding:8px 6px; text-align:right;">{r['Kg por Embalar']:,.0f}</td>
+            <td style="padding:8px 6px; text-align:right; font-weight:500;">{r['Kg por galvanizar']:,.0f}</td>
+            <td style="padding:8px 6px; text-align:right; font-weight:500;">{r['Kg por Embalar']:,.0f}</td>
             <td style="padding:8px 6px; text-align:center; font-weight:500;">{r['Fecha Programada']}</td>
             <td style="padding:8px 6px; text-align:center; font-weight:bold; color:{'#d62728' if r['Desviacion_Dias'] > 0 else '#2ca02c'};">{r['Fecha Estimada Finalizar']}</td>
             <td style="padding:8px 6px; text-align:center; background-color:{color_diag}; font-weight:600; font-size:11px;">{r['Diagnostico']}</td>
@@ -445,57 +436,12 @@ try:
     <table>
     <thead>
     <tr>
-        <th style="padding:9px 6px; text-align:left; position:sticky; left:0; background-color:#fce5cd; z-index:6; min-width:110px;">1. Despacho</th>
-        <th style="padding:9px 6px; text-align:left; position:sticky; left:110px; background-color:#fce5cd; z-index:6; min-width:130px;">2. Subproyecto</th>
-        <th style="padding:9px 6px; text-align:right; min-width:95px;">3. Kg Orden Proceder</th>
-        <th style="padding:9px 6px; text-align:right; min-width:95px;">4. Kg por cargar (Ing)</th>
-        <th style="padding:9px 6px; text-align:right; min-width:90px;">5. Kg CNCL</th>
-        <th style="padding:9px 6px; text-align:right; min-width:90px;">6. Kg CNCPL</th>
-        <th style="padding:9px 6px; text-align:right; min-width:95px;">7. Kg Soldadura</th>
-        <th style="padding:9px 6px; text-align:right; min-width:90px;">8. Kg Fabricado</th>
-        <th style="padding:9px 6px; text-align:right; min-width:90px;">9. Kg Galvanizar</th>
-        <th style="padding:9px 6px; text-align:right; min-width:90px;">10. Kg Embalar</th>
-        <th style="padding:9px 6px; text-align:center; min-width:95px;">11. F. Programada</th>
-        <th style="padding:9px 6px; text-align:center; min-width:105px;">12. F. Estimada Final</th>
-        <th style="padding:9px 6px; text-align:center; min-width:115px;">Desviación</th>
-    </tr>
-    </thead>
-    <tbody>
-    {''.join(filas_html)}
-    </tbody>
-    <tfoot>
-    <tr>
-        <td style="padding:8px 6px; text-align:left; position:sticky; left:0; background-color:#e8eaed; z-index:6;">TOTAL PENDIENTE</td>
-        <td style="padding:8px 6px; text-align:left; position:sticky; left:110px; background-color:#e8eaed; z-index:6;">{len(df_mostrar)} lotes</td>
-        <td style="padding:8px 6px; text-align:right;">{tot_orden:,.0f}</td>
-        <td style="padding:8px 6px; text-align:right;">{tot_ing:,.0f}</td>
-        <td style="padding:8px 6px; text-align:right;">{tot_cncl:,.0f}</td>
-        <td style="padding:8px 6px; text-align:right;">{tot_cncpl:,.0f}</td>
-        <td style="padding:8px 6px; text-align:right;">{tot_sold:,.0f}</td>
-        <td style="padding:8px 6px; text-align:right;">{tot_fab:,.0f}</td>
-        <td style="padding:8px 6px; text-align:right;">{tot_galv:,.0f}</td>
-        <td style="padding:8px 6px; text-align:right;">{tot_emb:,.0f}</td>
-        <td style="padding:8px 6px; text-align:center;">-</td>
-        <td style="padding:8px 6px; text-align:center;">-</td>
-        <td style="padding:8px 6px; text-align:center;">-</td>
-    </tr>
-    </tfoot>
-    </table>
-    </div>
-    </body>
-    </html>
-    """
-
-    import streamlit.components.v1 as components
-    components.html(tabla_html, height=660, scrolling=False)
-
-    # Botón para exportar el plan de despachos a Excel/CSV
-    st.download_button(
-        label="📥 Descargar Plan de Despachos (CSV)",
-        data=df_resultado.to_csv(index=False).encode('utf-8'),
-        file_name=f"plan_despachos_estimados_{datetime.now().strftime('%Y%m%d')}.csv",
-        mime="text/csv"
-    )
-
-except Exception as e:
-    st.error(f"Error procesando los datos: {e}")
+        <th style="padding:9px 6px; text-align:left; position:sticky; left:0; background-color:#fce5cd; z-index:6; min-width:130px;">Identificador de fila</th>
+        <th style="padding:9px 6px; text-align:left; position:sticky; left:130px; background-color:#fce5cd; z-index:6; min-width:130px;">Subproyecto</th>
+        <th style="padding:9px 6px; text-align:right; min-width:95px;">Kg Orden Proceder</th>
+        <th style="padding:9px 6px; text-align:right; min-width:95px;">Kg por cargar (Ing)</th>
+        <th style="padding:9px 6px; text-align:right; min-width:90px;">Kg por procesar CNCL</th>
+        <th style="padding:9px 6px; text-align:right; min-width:90px;">Kg por procesar CNCPL</th>
+        <th style="padding:9px 6px; text-align:right; min-width:95px;">Kg por procesar Soldadura</th>
+        <th style="padding:9px 6px; text-align:right; min-width:90px;">Kg por procesar Fabricado</th>
+        <th style="padding:9px 6px; text-align:right
