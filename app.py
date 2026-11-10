@@ -117,7 +117,6 @@ def normalizar_procesos(df_proc):
             
             kg_av = pd.to_numeric(fila.get(col_av, 0), errors='coerce') or 0 if col_av else 0
             
-            # Para Fabricado toma la meta total del proyecto; Galvanizado y Embalaje se fijan por despacho
             if proc == "Fabricado":
                 kg_necesidad = kg_total_proyecto
             else:
@@ -138,7 +137,95 @@ def normalizar_procesos(df_proc):
     return pd.DataFrame(registros), datos_ingenieria
 
 # -------------------------------------------------------------
-# 2. CONTROLES GENERALES DE PLANTA
+# 2. GENERADOR HTML DE TABLA DE CONTROL
+# -------------------------------------------------------------
+def renderizar_tabla_html(df_mostrar, totales):
+    filas = []
+    for idx, r in df_mostrar.iterrows():
+        bg = "#ffffff" if idx % 2 == 0 else "#fafafa"
+        color_diag = "#b7e1cd" if ("A Tiempo" in r["Diagnostico"] or "Completado" in r["Diagnostico"]) else "#f4c7c3"
+        color_ing = "#d62728" if r["Kg por cargar (Ing)"] > 0 else "#555"
+        color_final = "#d62728" if r["Desviacion_Dias"] > 0 else "#2ca02c"
+        
+        filas.append(
+            f'<tr style="background-color:{bg}; border-bottom:1px solid #eee;">'
+            f'<td style="padding:8px 6px; text-align:left; font-weight:600; position:sticky; left:0; background-color:{bg}; z-index:2; border-right:1px solid #ddd;">{r["Identificador de fila"]}</td>'
+            f'<td style="padding:8px 6px; text-align:left; position:sticky; left:130px; background-color:{bg}; z-index:2; border-right:1px solid #ddd;">{r["Subproyecto"]}</td>'
+            f'<td style="padding:8px 6px; text-align:right;">{r["Kg Orden Proceder"]:,.0f}</td>'
+            f'<td style="padding:8px 6px; text-align:right; font-weight:500; color:{color_ing};">{r["Kg por cargar (Ing)"]:,.0f}</td>'
+            f'<td style="padding:8px 6px; text-align:right;">{r["Kg por procesar CNCL"]:,.0f}</td>'
+            f'<td style="padding:8px 6px; text-align:right;">{r["Kg por procesar CNCPL"]:,.0f}</td>'
+            f'<td style="padding:8px 6px; text-align:right;">{r["Kg por procesar Soldadura"]:,.0f}</td>'
+            f'<td style="padding:8px 6px; text-align:right;">{r["Kg por procesar Fabricado"]:,.0f}</td>'
+            f'<td style="padding:8px 6px; text-align:right; font-weight:500;">{r["Kg por galvanizar"]:,.0f}</td>'
+            f'<td style="padding:8px 6px; text-align:right; font-weight:500;">{r["Kg por Embalar"]:,.0f}</td>'
+            f'<td style="padding:8px 6px; text-align:center; font-weight:500;">{r["Fecha Programada"]}</td>'
+            f'<td style="padding:8px 6px; text-align:center; font-weight:bold; color:{color_final};">{r["Fecha Estimada Finalizar"]}</td>'
+            f'<td style="padding:8px 6px; text-align:center; background-color:{color_diag}; font-weight:600; font-size:11px;">{r["Diagnostico"]}</td>'
+            f'</tr>'
+        )
+    
+    tbody = "".join(filas)
+    
+    tfoot = (
+        f'<tr style="background-color:#e8eaed; position:sticky; bottom:0; z-index:5; border-top:2px solid #999; font-weight:bold;">'
+        f'<td style="padding:8px 6px; text-align:left; position:sticky; left:0; background-color:#e8eaed; z-index:6;">TOTAL PENDIENTE</td>'
+        f'<td style="padding:8px 6px; text-align:left; position:sticky; left:130px; background-color:#e8eaed; z-index:6;">{len(df_mostrar)} lotes</td>'
+        f'<td style="padding:8px 6px; text-align:right;">{totales["orden"]:,.0f}</td>'
+        f'<td style="padding:8px 6px; text-align:right;">{totales["ing"]:,.0f}</td>'
+        f'<td style="padding:8px 6px; text-align:right;">{totales["cncl"]:,.0f}</td>'
+        f'<td style="padding:8px 6px; text-align:right;">{totales["cncpl"]:,.0f}</td>'
+        f'<td style="padding:8px 6px; text-align:right;">{totales["sold"]:,.0f}</td>'
+        f'<td style="padding:8px 6px; text-align:right;">{totales["fab"]:,.0f}</td>'
+        f'<td style="padding:8px 6px; text-align:right;">{totales["galv"]:,.0f}</td>'
+        f'<td style="padding:8px 6px; text-align:right;">{totales["emb"]:,.0f}</td>'
+        f'<td style="padding:8px 6px; text-align:center;">-</td>'
+        f'<td style="padding:8px 6px; text-align:center;">-</td>'
+        f'<td style="padding:8px 6px; text-align:center;">-</td>'
+        f'</tr>'
+    )
+    
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body {{ margin:0; padding:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
+.tabla-container {{ overflow:auto; max-height:640px; border:1px solid #ccc; border-radius:4px; }}
+table {{ width:100%; border-collapse:collapse; font-size:12px; }}
+thead th {{ background-color:#fce5cd; color:#333; position:sticky; top:0; z-index:5; border-bottom:2px solid #ccc; font-weight:600; text-align:center; }}
+</style>
+</head>
+<body>
+<div class="tabla-container">
+<table>
+<thead>
+<tr>
+    <th style="padding:9px 6px; text-align:left; position:sticky; left:0; background-color:#fce5cd; z-index:6; min-width:130px;">Identificador de fila</th>
+    <th style="padding:9px 6px; text-align:left; position:sticky; left:130px; background-color:#fce5cd; z-index:6; min-width:130px;">Subproyecto</th>
+    <th style="padding:9px 6px; text-align:right; min-width:95px;">Kg Orden Proceder</th>
+    <th style="padding:9px 6px; text-align:right; min-width:95px;">Kg por cargar (Ing)</th>
+    <th style="padding:9px 6px; text-align:right; min-width:90px;">Kg por procesar CNCL</th>
+    <th style="padding:9px 6px; text-align:right; min-width:90px;">Kg por procesar CNCPL</th>
+    <th style="padding:9px 6px; text-align:right; min-width:95px;">Kg por procesar Soldadura</th>
+    <th style="padding:9px 6px; text-align:right; min-width:90px;">Kg por procesar Fabricado</th>
+    <th style="padding:9px 6px; text-align:right; min-width:90px;">Kg por galvanizar</th>
+    <th style="padding:9px 6px; text-align:right; min-width:90px;">Kg por Embalar</th>
+    <th style="padding:9px 6px; text-align:center; min-width:95px;">Fecha Programada</th>
+    <th style="padding:9px 6px; text-align:center; min-width:105px;">Fecha Estimada Finalizar</th>
+    <th style="padding:9px 6px; text-align:center; min-width:115px;">Desviación</th>
+</tr>
+</thead>
+<tbody>{tbody}</tbody>
+<tfoot>{tfoot}</tfoot>
+</table>
+</div>
+</body>
+</html>"""
+    return html
+
+# -------------------------------------------------------------
+# 3. CONTROLES GENERALES DE PLANTA
 # -------------------------------------------------------------
 st.sidebar.header("⚙️ Parámetros de Operación")
 horas_sem = st.sidebar.number_input("Horas turno / semana por operario", value=44, step=1)
@@ -227,7 +314,7 @@ try:
                     ratios_productividad[p_oficial] = float(kghh_val)
 
     # -------------------------------------------------------------
-    # 3. MOTOR DE CÁLCULO: CAPACIDADES DIARIAS Y RUTA CRÍTICA
+    # 4. MOTOR DE CÁLCULO: CAPACIDADES DIARIAS Y RUTA CRÍTICA
     # -------------------------------------------------------------
     capacidad_diaria_kg = {}
     for proc in PROCESOS_LINEA:
@@ -248,7 +335,6 @@ try:
         kg_orden_subp = info_ing["Orden"]
         kg_carg_subp = info_ing["Cargados"]
 
-        # Pool de avances reales registrados en el subproyecto para consumo FIFO
         av_disponible = {}
         req_total_subp = {}
         for proc in PROCESOS_LINEA:
@@ -269,7 +355,6 @@ try:
             dias_proc = {}
 
             for proc in PROCESOS_LINEA:
-                # REGLA CLAVE: Para Galvanizado y Embalaje, la meta requerida es exactamente los kilos programados del despacho
                 if proc in ["Galvanizado", "Embalaje"]:
                     req_lp = kg_lote
                 else:
@@ -282,7 +367,6 @@ try:
                 
                 dias_proc[proc] = pend_lp / capacidad_diaria_kg[proc]
 
-            # Kilos de las columnas específicas solicitadas
             kg_por_cargar_ing = max(0.0, kg_orden_lote - kg_carg_lote)
             kg_cncl = pends_lote.get("CNCL", 0.0)
             kg_cncpl = pends_lote.get("CNCPL", 0.0)
@@ -313,7 +397,6 @@ try:
 
             dias_habiles_totales = int(np.ceil(max(0.0, t_emb_end)))
 
-            # Cálculo de fechas con corrimiento dinámico
             if dias_habiles_totales == 0:
                 fecha_inicio_guia = f_prog
                 fecha_estimada_final = f_prog
@@ -356,7 +439,7 @@ try:
     df_resultado = pd.DataFrame(filas_tabla_despachos)
 
     # -------------------------------------------------------------
-    # 4. VISUALIZACIÓN EN PANTALLA
+    # 5. VISUALIZACIÓN EN PANTALLA
     # -------------------------------------------------------------
     total_lotes = len(df_resultado)
     lotes_atrasados = len(df_resultado[df_resultado["Desviacion_Dias"] > 0])
@@ -385,63 +468,26 @@ try:
 
     df_mostrar = df_mostrar.sort_values(by="Fecha_DT")
 
-    # Totales para el pie de tabla
-    tot_orden = df_mostrar["Kg Orden Proceder"].sum()
-    tot_ing = df_mostrar["Kg por cargar (Ing)"].sum()
-    tot_cncl = df_mostrar["Kg por procesar CNCL"].sum()
-    tot_cncpl = df_mostrar["Kg por procesar CNCPL"].sum()
-    tot_sold = df_mostrar["Kg por procesar Soldadura"].sum()
-    tot_fab = df_mostrar["Kg por procesar Fabricado"].sum()
-    tot_galv = df_mostrar["Kg por galvanizar"].sum()
-    tot_emb = df_mostrar["Kg por Embalar"].sum()
+    totales_dict = {
+        "orden": df_mostrar["Kg Orden Proceder"].sum(),
+        "ing": df_mostrar["Kg por cargar (Ing)"].sum(),
+        "cncl": df_mostrar["Kg por procesar CNCL"].sum(),
+        "cncpl": df_mostrar["Kg por procesar CNCPL"].sum(),
+        "sold": df_mostrar["Kg por procesar Soldadura"].sum(),
+        "fab": df_mostrar["Kg por procesar Fabricado"].sum(),
+        "galv": df_mostrar["Kg por galvanizar"].sum(),
+        "emb": df_mostrar["Kg por Embalar"].sum(),
+    }
 
-    filas_html = []
-    for idx, r in df_mostrar.iterrows():
-        bg = "#ffffff" if idx % 2 == 0 else "#fafafa"
-        color_diag = "#b7e1cd" if "A Tiempo" in r["Diagnostico"] or "Completado" in r["Diagnostico"] else "#f4c7c3"
-        
-        filas_html.append(f"""
-        <tr style="background-color:{bg}; border-bottom:1px solid #eee;">
-            <td style="padding:8px 6px; text-align:left; font-weight:600; position:sticky; left:0; background-color:{bg}; z-index:2; border-right:1px solid #ddd;">{r['Identificador de fila']}</td>
-            <td style="padding:8px 6px; text-align:left; position:sticky; left:130px; background-color:{bg}; z-index:2; border-right:1px solid #ddd;">{r['Subproyecto']}</td>
-            <td style="padding:8px 6px; text-align:right;">{r['Kg Orden Proceder']:,.0f}</td>
-            <td style="padding:8px 6px; text-align:right; font-weight:500; color:{'#d62728' if r['Kg por cargar (Ing)'] > 0 else '#555'};">{r['Kg por cargar (Ing)']:,.0f}</td>
-            <td style="padding:8px 6px; text-align:right;">{r['Kg por procesar CNCL']:,.0f}</td>
-            <td style="padding:8px 6px; text-align:right;">{r['Kg por procesar CNCPL']:,.0f}</td>
-            <td style="padding:8px 6px; text-align:right;">{r['Kg por procesar Soldadura']:,.0f}</td>
-            <td style="padding:8px 6px; text-align:right;">{r['Kg por procesar Fabricado']:,.0f}</td>
-            <td style="padding:8px 6px; text-align:right; font-weight:500;">{r['Kg por galvanizar']:,.0f}</td>
-            <td style="padding:8px 6px; text-align:right; font-weight:500;">{r['Kg por Embalar']:,.0f}</td>
-            <td style="padding:8px 6px; text-align:center; font-weight:500;">{r['Fecha Programada']}</td>
-            <td style="padding:8px 6px; text-align:center; font-weight:bold; color:{'#d62728' if r['Desviacion_Dias'] > 0 else '#2ca02c'};">{r['Fecha Estimada Finalizar']}</td>
-            <td style="padding:8px 6px; text-align:center; background-color:{color_diag}; font-weight:600; font-size:11px;">{r['Diagnostico']}</td>
-        </tr>
-        """)
+    tabla_html = renderizar_tabla_html(df_mostrar, totales_dict)
+    components.html(tabla_html, height=660, scrolling=False)
 
-    tabla_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <meta charset="utf-8">
-    <style>
-    body {{ margin:0; padding:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
-    .tabla-container {{ overflow:auto; max-height:640px; border:1px solid #ccc; border-radius:4px; }}
-    table {{ width:100%; border-collapse:collapse; font-size:12px; }}
-    thead th {{ background-color:#fce5cd; color:#333; position:sticky; top:0; z-index:5; border-bottom:2px solid #ccc; font-weight:600; text-align:center; }}
-    tfoot td {{ background-color:#e8eaed; position:sticky; bottom:0; z-index:5; border-top:2px solid #999; font-weight:bold; }}
-    </style>
-    </head>
-    <body>
-    <div class="tabla-container">
-    <table>
-    <thead>
-    <tr>
-        <th style="padding:9px 6px; text-align:left; position:sticky; left:0; background-color:#fce5cd; z-index:6; min-width:130px;">Identificador de fila</th>
-        <th style="padding:9px 6px; text-align:left; position:sticky; left:130px; background-color:#fce5cd; z-index:6; min-width:130px;">Subproyecto</th>
-        <th style="padding:9px 6px; text-align:right; min-width:95px;">Kg Orden Proceder</th>
-        <th style="padding:9px 6px; text-align:right; min-width:95px;">Kg por cargar (Ing)</th>
-        <th style="padding:9px 6px; text-align:right; min-width:90px;">Kg por procesar CNCL</th>
-        <th style="padding:9px 6px; text-align:right; min-width:90px;">Kg por procesar CNCPL</th>
-        <th style="padding:9px 6px; text-align:right; min-width:95px;">Kg por procesar Soldadura</th>
-        <th style="padding:9px 6px; text-align:right; min-width:90px;">Kg por procesar Fabricado</th>
-        <th style="padding:9px 6px; text-align:right
+    st.download_button(
+        label="📥 Descargar Plan de Despachos (CSV)",
+        data=df_resultado.to_csv(index=False).encode('utf-8'),
+        file_name=f"plan_despachos_estimados_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv"
+    )
+
+except Exception as e:
+    st.error(f"Error procesando los datos: {e}")
