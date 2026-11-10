@@ -487,4 +487,200 @@ try:
     max_retraso = df_resultado["Desviacion_Dias"].max() if not df_resultado.empty else 0
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Lotes Evaluados", total
+    c1.metric("Lotes Evaluados", total_lotes)
+    c2.metric("Lotes en Fecha", lotes_ok)
+    c3.metric("Lotes Desviados (Retraso)", lotes_atrasados, delta=f"-{lotes_atrasados}" if lotes_atrasados > 0 else "0", delta_color="inverse")
+    c4.metric("Máximo Retraso Detectado", f"+{max_retraso} días" if max_retraso > 0 else "0 días", delta_color="inverse")
+
+    st.markdown("---")
+
+    col_f1, col_f2 = st.columns([2, 3])
+    with col_f1:
+        filtro_subp = st.multiselect("Filtrar por Subproyecto:", sorted(df_resultado["Subproyecto"].unique()))
+    with col_f2:
+        solo_atrasados = st.checkbox("Mostrar únicamente lotes con fecha desviada (retraso)")
+
+    df_mostrar = df_resultado.copy()
+    if filtro_subp:
+        df_mostrar = df_mostrar[df_mostrar["Subproyecto"].isin(filtro_subp)]
+    if solo_atrasados:
+        df_mostrar = df_mostrar[df_mostrar["Desviacion_Dias"] > 0]
+
+    df_mostrar = df_mostrar.sort_values(by="Fecha_DT")
+
+    totales_dict = {
+        "orden": df_mostrar["Kg Orden Proceder"].sum(),
+        "ing": df_mostrar["Kg por cargar (Ing)"].sum(),
+        "cncl": df_mostrar["Kg por procesar CNCL"].sum(),
+        "cncpl": df_mostrar["Kg por procesar CNCPL"].sum(),
+        "sold": df_mostrar["Kg por procesar Soldadura"].sum(),
+        "fab": df_mostrar["Kg por procesar Fabricado"].sum(),
+        "galv": df_mostrar["Kg por galvanizar"].sum(),
+        "emb": df_mostrar["Kg por Embalar"].sum(),
+    }
+
+    # Renderizar la tabla principal
+    tabla_html = renderizar_tabla_html(df_mostrar, totales_dict)
+    components.html(tabla_html, height=580, scrolling=False)
+
+    # -------------------------------------------------------------
+    # 6. SECCIÓN CARTA GANTT DE CARGA (7 PROCESOS)
+    # -------------------------------------------------------------
+    st.markdown("---")
+    st.markdown("### 📊 Carta Gantt de Carga & Secuencia de Fabricación")
+    st.caption("Visualiza el cronograma dinámico con traslapes y kilos asignados para los 7 procesos clave.")
+
+    # Lista interactiva para seleccionar despacho
+    lista_opciones_despacho = ["Todos los Despachos (Consolidado de Planta)"] + [
+        f"{r['Identificador de fila']} | {r['Subproyecto']} (F. Prog: {r['Fecha Programada']})"
+        for _, r in df_mostrar.iterrows()
+    ]
+
+    c_gantt1, c_gantt2 = st.columns([3, 2])
+    with c_gantt1:
+        opcion_despacho = st.selectbox(
+            "🔍 Selecciona un Despacho para auditar su Carta Gantt (o deja en 'Consolidado de Planta'):",
+            lista_opciones_despacho,
+            index=0
+        )
+
+    # Cálculo de kilos distribuidos por semana para la vista consolidada
+    def calcular_kilos_semanales(df_g):
+        rows_dist = []
+        for _, r in df_g.iterrows():
+            start_dt, end_dt, kg = r["Inicio"], r["Fin"], r["Kilos"]
+            if kg <= 0: continue
+            cur = start_dt
+            days_by_week = {}
+            total_days = 0
+            while cur <= end_dt:
+                if cur.weekday() < 5:
+                    iso = f"{cur.isocalendar()[0]}-{cur.isocalendar()[1]:02d}"
+                    days_by_week[iso] = days_by_week.get(iso, 0) + 1
+                    total_days += 1
+                cur += pd.Timedelta(days=1)
+            if total_days == 0:
+                total_days = 1
+                iso = f"{start_dt.isocalendar()[0]}-{start_dt.isocalendar()[1]:02d}"
+                days_by_week[iso] = 1
+            for wk, cnt in days_by_week.items():
+                rows_dist.append({"Semana": wk, "Proceso": r["Proceso"], "Kilos": (cnt / total_days) * kg})
+        return pd.DataFrame(rows_dist)
+
+    df_semanal_total = calcular_kilos_semanales(df_gantt_total)
+
+    if opcion_despacho != "Todos los Despachos (Consolidado de Planta)":
+        # =========================================================
+        # VISTA A: GANTT INDIVIDUAL POR DESPACHO
+        # =========================================================
+        id_sel = opcion_despacho.split(" | ")[0].strip()
+        info_lote_sel = df_mostrar[df_mostrar["Identificador de fila"] == id_sel].iloc[0]
+        df_gantt_ind = df_gantt_total[df_gantt_total["Identificador de fila"] == id_sel].copy()
+
+        # Resumen del lote seleccionado
+        g1, g2, g3, g4 = st.columns(4)
+        g1.metric("Subproyecto", info_lote_sel["Subproyecto"])
+        g2.metric("Fecha Programada", info_lote_sel["Fecha Programada"])
+        g3.metric("Fecha Estimada Término", info_lote_sel["Fecha Estimada Finalizar"])
+        g4.metric("Estado de Entrega", info_lote_sel["Diagnostico"])
+
+        fig_ind = px.timeline(
+            df_gantt_ind,
+            x_start="Inicio",
+            x_end="Fin",
+            y="Proceso",
+            text="Texto_Simple",
+            color="Proceso",
+            category_orders={"Proceso": PROCESOS_GANTT},
+            color_discrete_map={
+                "Ingeniería": "#102a45",
+                "CNCL": "#1f77b4",
+                "CNCPL": "#aec7e8",
+                "Soldadura": "#ff7f0e",
+                "Fabricado": "#2ca02c",
+                "Galvanizado": "#9467bd",
+                "Embalaje": "#8c564b"
+            }
+        )
+        fig_ind.update_yaxes(autorange="reversed")
+        fig_ind.update_layout(
+            height=380,
+            margin=dict(l=10, r=20, t=30, b=10),
+            xaxis_title="Calendario de Ejecución con Traslapes",
+            yaxis_title="Proceso",
+            showlegend=False
+        )
+        st.plotly_chart(fig_ind, use_container_width=True)
+
+    else:
+        # =========================================================
+        # VISTA B: GANTT CONSOLIDADO + KILOS POR PROCESO EN SEMANA
+        # =========================================================
+        semanas_disp = sorted(list(df_semanal_total["Semana"].unique())) if not df_semanal_total.empty else ["2026-48"]
+        idx_def_sem = semanas_disp.index("2026-48") if "2026-48" in semanas_disp else 0
+
+        with c_gantt2:
+            sem_foco = st.selectbox("📅 Auditar Kilos en Semana Específica:", semanas_disp, index=idx_def_sem)
+
+        # Matriz pivoteada de kilos en esa semana
+        df_foco_sem = df_semanal_total[df_semanal_total["Semana"] == sem_foco]
+        kilos_foco_dict = df_foco_sem.groupby("Proceso")["Kilos"].sum().to_dict()
+
+        st.markdown(f"#### 📦 Kilos Totales Requeridos en la Semana **{sem_foco}** por Proceso")
+        
+        # 7 Métricas alineadas
+        cols_m = st.columns(7)
+        for i, proc in enumerate(PROCESOS_GANTT):
+            kg_sem_proc = kilos_foco_dict.get(proc, 0.0)
+            cols_m[i].metric(proc, f"{kg_sem_proc:,.0f} kg")
+
+        # Gráfico Gantt consolidado de todos los lotes
+        st.markdown("#### 🗓️ Cronograma Consolidado de Producción (Todos los Lotes)")
+        fig_all = px.timeline(
+            df_gantt_total[df_gantt_total["Kilos"] > 0],
+            x_start="Inicio",
+            x_end="Fin",
+            y="Proceso",
+            color="Subproyecto",
+            text="Texto",
+            category_orders={"Proceso": PROCESOS_GANTT},
+            hover_data=["Identificador de fila", "Subproyecto", "Kilos", "Duracion"]
+        )
+        fig_all.update_yaxes(autorange="reversed")
+        fig_all.update_layout(
+            height=460,
+            margin=dict(l=10, r=20, t=30, b=10),
+            xaxis_title="Horizonte Temporal de Producción",
+            yaxis_title="Proceso",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig_all, use_container_width=True)
+
+        # Gráfico de barras de carga en la semana foco
+        df_bar_sem = pd.DataFrame([
+            {"Proceso": p, "Kilos": kilos_foco_dict.get(p, 0.0)}
+            for p in PROCESOS_GANTT
+        ])
+        fig_bar_sem = px.bar(
+            df_bar_sem,
+            x="Proceso",
+            y="Kilos",
+            text_auto='.2s',
+            title=f"Volumen Total de Carga a Procesar en la Semana {sem_foco}",
+            color="Proceso",
+            category_orders={"Proceso": PROCESOS_GANTT},
+            color_discrete_sequence=["#102a45", "#1f77b4", "#aec7e8", "#ff7f0e", "#2ca02c", "#9467bd", "#8c564b"]
+        )
+        fig_bar_sem.update_layout(height=320, showlegend=False, margin=dict(l=10, r=10, t=35, b=10))
+        st.plotly_chart(fig_bar_sem, use_container_width=True)
+
+    # Botón de descarga CSV
+    st.download_button(
+        label="📥 Descargar Plan de Despachos (CSV)",
+        data=df_resultado.to_csv(index=False).encode('utf-8'),
+        file_name=f"plan_despachos_estimados_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv"
+    )
+
+except Exception as e:
+    st.error(f"Error procesando los datos: {e}")
