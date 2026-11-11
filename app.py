@@ -234,12 +234,13 @@ def render_tabla_carga_proceso_html(df_lotes_proc, semanas_cols, cap_por_semana)
         for sem in semanas_cols
     ])
 
-    # 4. Filas del Cuerpo con 5 columnas compactas optimizadas
+    # 4. Filas del Cuerpo con 6 columnas compactas optimizadas
     filas_html = []
     for idx, r in df_lotes_proc.iterrows():
         id_fila = r["Identificador de fila"]
         subp = r["Subproyecto"]
         f_desp = r.get("Fecha_Despacho", "-")
+        f_est_disp = r.get("Fecha_Est_Display", "-")
         dias = int(r["Cant_Dias"])
         kg_p = float(r["Kilos_Procesar"])
 
@@ -264,8 +265,9 @@ def render_tabla_carga_proceso_html(df_lotes_proc, semanas_cols, cap_por_semana)
             f'<td style="padding:5px 6px; text-align:left; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; font-weight:600; color:#0f172a; position:sticky; left:0px; width:105px; min-width:105px; max-width:105px; background:{bg_col}; z-index:3; font-size:11px;">{id_fila}</td>'
             f'<td style="padding:5px 6px; text-align:left; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; color:#334155; position:sticky; left:105px; width:95px; min-width:95px; max-width:95px; background:{bg_col}; z-index:3; font-size:11px;">{subp}</td>'
             f'<td style="padding:5px 4px; text-align:center; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; color:#334155; position:sticky; left:200px; width:80px; min-width:80px; max-width:80px; background:{bg_col}; z-index:3; font-size:11px;">{f_desp}</td>'
-            f'<td style="padding:5px 4px; text-align:right; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; color:#475569; position:sticky; left:280px; width:50px; min-width:50px; max-width:50px; background:{bg_col}; z-index:3; font-size:11px;">{dias}</td>'
-            f'<td style="padding:5px 6px; text-align:right; border-bottom:1px solid #e2e8f0; border-right:2px solid #94a3b8; font-weight:600; color:#0f172a; position:sticky; left:330px; width:85px; min-width:85px; max-width:85px; background:{bg_col}; z-index:3; font-size:11px;">{kg_p:,.0f}</td>'
+            f'<td style="padding:5px 4px; text-align:center; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; color:#0f172a; position:sticky; left:280px; width:90px; min-width:90px; max-width:90px; background:{bg_col}; z-index:3; font-size:11px; font-weight:500;">{f_est_disp}</td>'
+            f'<td style="padding:5px 4px; text-align:right; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; color:#475569; position:sticky; left:370px; width:50px; min-width:50px; max-width:50px; background:{bg_col}; z-index:3; font-size:11px;">{dias}</td>'
+            f'<td style="padding:5px 6px; text-align:right; border-bottom:1px solid #e2e8f0; border-right:2px solid #94a3b8; font-weight:600; color:#0f172a; position:sticky; left:420px; width:85px; min-width:85px; max-width:85px; background:{bg_col}; z-index:3; font-size:11px;">{kg_p:,.0f}</td>'
             f'{"".join(celdas_semanas)}'
             f'</tr>'
         )
@@ -290,7 +292,7 @@ tr.data-row:hover td {{ background-color:#f1f5f9 !important; }}
 <thead>
 <!-- Fila 1: Capacidad Semanal -->
 <tr>
-    <th colspan="5" style="top:0px; left:0px; position:sticky; z-index:10; background:#f8fafc; color:#334155; text-align:right; padding:6px 10px; font-weight:700; font-size:11px; border:1px solid #e2e8f0; border-right:2px solid #94a3b8; width:415px; min-width:415px; max-width:415px;">Capacidad Semanal Kg:</th>
+    <th colspan="6" style="top:0px; left:0px; position:sticky; z-index:10; background:#f8fafc; color:#334155; text-align:right; padding:6px 10px; font-weight:700; font-size:11px; border:1px solid #e2e8f0; border-right:2px solid #94a3b8; width:505px; min-width:505px; max-width:505px;">Capacidad Semanal Kg:</th>
     {th_caps}
 </tr>
 
@@ -299,8 +301,9 @@ tr.data-row:hover td {{ background-color:#f1f5f9 !important; }}
     <th style="top:30px; left:0px; position:sticky; z-index:10; background:#f1f5f9; color:#0f172a; text-align:left; padding:5px 6px; width:105px; min-width:105px; max-width:105px; border:1px solid #cbd5e1; font-weight:700; font-size:11px;">TOTAL PENDIENTE</th>
     <th style="top:30px; left:105px; position:sticky; z-index:10; background:#f1f5f9; color:#475569; text-align:left; padding:5px 6px; width:95px; min-width:95px; max-width:95px; border:1px solid #cbd5e1; font-weight:600; font-size:11px;">{len(df_lotes_proc)} lotes</th>
     <th style="top:30px; left:200px; position:sticky; z-index:10; background:#f1f5f9; color:#475569; text-align:center; padding:5px 4px; width:80px; min-width:80px; max-width:80px; border:1px solid #cbd5e1; font-weight:600; font-size:11px;">-</th>
-    <th style="top:30px; left:280px; position:sticky; z-index:10; background:#f1f5f9; color:#0f172a; text-align:right; padding:5px 4px; width:50px; min-width:50px; max-width:50px; border:1px solid #cbd5e1; font-weight:700; font-size:11px;">{tot_dias}</th>
-    <th style="top:30px; left:330px; position:sticky; z-index:10; background:#f1f5f9; color:#0f172a; text-align:right; padding:5px 6px; width:85px; min-width:85px; max-width:85px; border:1px solid #cbd5e1; border-right:2px solid #94a3b8; font-weight:700; font-size:11px;">{tot_kg_proc:,.0f}</th>
+    <th style="top:30px; left:280px; position:sticky; z-index:10; background:#f1f5f9; color:#475569; text-align:center; padding:5px 4px; width:90px; min-width:90px; max-width:90px; border:1px solid #cbd5e1; font-weight:600; font-size:11px;">-</th>
+    <th style="top:30px; left:370px; position:sticky; z-index:10; background:#f1f5f9; color:#0f172a; text-align:right; padding:5px 4px; width:50px; min-width:50px; max-width:50px; border:1px solid #cbd5e1; font-weight:700; font-size:11px;">{tot_dias}</th>
+    <th style="top:30px; left:420px; position:sticky; z-index:10; background:#f1f5f9; color:#0f172a; text-align:right; padding:5px 6px; width:85px; min-width:85px; max-width:85px; border:1px solid #cbd5e1; border-right:2px solid #94a3b8; font-weight:700; font-size:11px;">{tot_kg_proc:,.0f}</th>
     {th_totals}
 </tr>
 
@@ -309,8 +312,9 @@ tr.data-row:hover td {{ background-color:#f1f5f9 !important; }}
     <th style="top:60px; left:0px; position:sticky; z-index:10; background-color:#135b79; color:#ffffff; text-align:left; padding:6px 6px; width:105px; min-width:105px; max-width:105px; border:1px solid #0e3d54; font-weight:600; font-size:11px; line-height:1.15;">Identificador<br>de fila</th>
     <th style="top:60px; left:105px; position:sticky; z-index:10; background-color:#135b79; color:#ffffff; text-align:left; padding:6px 6px; width:95px; min-width:95px; max-width:95px; border:1px solid #0e3d54; font-weight:600; font-size:11px; line-height:1.15;">Subproyecto</th>
     <th style="top:60px; left:200px; position:sticky; z-index:10; background-color:#135b79; color:#ffffff; text-align:center; padding:6px 4px; width:80px; min-width:80px; max-width:80px; border:1px solid #0e3d54; font-weight:600; font-size:11px; line-height:1.15;">Fecha<br>Despacho</th>
-    <th style="top:60px; left:280px; position:sticky; z-index:10; background-color:#135b79; color:#ffffff; text-align:center; padding:6px 4px; width:50px; min-width:50px; max-width:50px; border:1px solid #0e3d54; font-weight:600; font-size:11px; line-height:1.15;">Cant.<br>Días</th>
-    <th style="top:60px; left:330px; position:sticky; z-index:10; background-color:#135b79; color:#ffffff; text-align:right; padding:6px 6px; width:85px; min-width:85px; max-width:85px; border:1px solid #0e3d54; border-right:2px solid #94a3b8; font-weight:600; font-size:11px; line-height:1.15;">Kilos por<br>Procesar</th>
+    <th style="top:60px; left:280px; position:sticky; z-index:10; background-color:#135b79; color:#ffffff; text-align:center; padding:6px 4px; width:90px; min-width:90px; max-width:90px; border:1px solid #0e3d54; font-weight:600; font-size:11px; line-height:1.15;">Fecha Est.<br>Entrega</th>
+    <th style="top:60px; left:370px; position:sticky; z-index:10; background-color:#135b79; color:#ffffff; text-align:center; padding:6px 4px; width:50px; min-width:50px; max-width:50px; border:1px solid #0e3d54; font-weight:600; font-size:11px; line-height:1.15;">Cant.<br>Días</th>
+    <th style="top:60px; left:420px; position:sticky; z-index:10; background-color:#135b79; color:#ffffff; text-align:right; padding:6px 6px; width:85px; min-width:85px; max-width:85px; border:1px solid #0e3d54; border-right:2px solid #94a3b8; font-weight:600; font-size:11px; line-height:1.15;">Kilos por<br>Procesar</th>
     {th_semanas}
 </tr>
 </thead>
@@ -455,10 +459,17 @@ try:
     if not col_fecha_prog:
         col_fecha_prog = next((c for c in cols_backlog if "fecha" in c.lower()), None)
     col_despacho_real = next((c for c in cols_backlog if "despacho" in c.lower() and ("real" in c.lower() or "fecha" in c.lower())), None)
-    col_kg_prog = next((c for c in cols_backlog if "kilos" in c.lower() and "programad" in c.lower()), None)
     col_orden = next((c for c in cols_backlog if "orden" in c.lower() and "proceder" in c.lower()), None)
 
-    # DETECCIÓN ESTRICTA Y JERÁRQUICA DE COLUMNAS DE KILOS
+    # DETECCIÓN DE COLUMNAS DE KILOS DEL PROGRAMA DESPACHO
+    col_kg_prog = buscar_columna_kilos(cols_backlog, "programad", [
+        "Kilos Programados", "Kilos Programado", "Kilos programados", "Kg Programados", "Kg. Programados", "Kilos Programados Despacho"
+    ])
+    if not col_kg_prog:
+        col_kg_prog = next((c for c in cols_backlog if "programad" in c.lower() and ("kilo" in c.lower() or "kg" in c.lower())), None)
+    if not col_kg_prog:
+        col_kg_prog = next((c for c in cols_backlog if "kilos" in c.lower() and "programad" in c.lower()), None)
+
     col_kg_ing = buscar_columna_kilos(cols_backlog, "cargar", ["Kilos por Cargar_", "Kilos por Cargar"])
     col_kg_cncl = buscar_columna_kilos(cols_backlog, "cncl", ["Kilos por CNCL", "Kilos por CNCL_"])
     col_kg_doblez = buscar_columna_kilos(cols_backlog, "doblez", ["Kilos por DoblezL", "Kilos por Doblez", "Kilos por Doblez L"])
@@ -506,6 +517,7 @@ try:
         ratios_activos = dict(zip(edited_prod_df["Proceso"], edited_prod_df["Kg/HH Simulado"]))
 
     with st.sidebar.expander("🔍 Columnas de Kilos Vinculadas", expanded=False):
+        st.write(f"**Kilos Programados:** `{col_kg_prog}`")
         st.write(f"**Ingeniería:** `{col_kg_ing}`")
         st.write(f"**CNCL:** `{col_kg_cncl}`")
         st.write(f"**DoblezL:** `{col_kg_doblez}`")
@@ -533,7 +545,7 @@ try:
     df_backlog_activo["Fecha_DT"] = pd.to_datetime(df_backlog_activo[col_fecha_prog], errors='coerce', dayfirst=True)
     df_backlog_activo = df_backlog_activo.dropna(subset=["Fecha_DT"]).sort_values("Fecha_DT")
     df_backlog_activo["Mes_Entrega"] = df_backlog_activo["Fecha_DT"].dt.strftime("%Y-%m")
-    df_backlog_activo["Kg_Prog_Num"] = pd.to_numeric(df_backlog_activo[col_kg_prog], errors='coerce').fillna(0)
+    df_backlog_activo["Kg_Prog_Num"] = df_backlog_activo[col_kg_prog].apply(limpiar_numero) if col_kg_prog else 0.0
 
     if col_proyecto:
         df_backlog_activo["Proyecto_Codigo"] = df_backlog_activo[col_proyecto].fillna("").astype(str).str.strip()
@@ -585,7 +597,7 @@ try:
         id_despacho = str(lote[col_id_fila])
         subp = str(lote[col_sub_backlog])
         f_prog = lote["Fecha_DT"]
-        kg_lote = lote["Kg_Prog_Num"]
+        kg_lote = float(lote["Kg_Prog_Num"])
         proy_display = str(lote["Proyecto_Display"])
         proy_nombre = str(lote["Proyecto_Nombre"])
 
@@ -682,6 +694,11 @@ try:
             st_dt = base_start + pd.offsets.BDay(int(np.floor(s_off)))
             en_dt = st_dt + pd.offsets.BDay(dur_p) if dur_p > 0 else st_dt + pd.offsets.BDay(1)
             
+            # Cálculo de plazo para este proceso respecto a la fecha final de despacho
+            dias_post = max(0, int(np.ceil(t_emb_end - e_off)))
+            f_limite_p = f_prog - pd.offsets.BDay(dias_post)
+            fuera_plazo_p = (en_dt > f_limite_p) if kg_val > 0 else False
+            
             gantt_records_all.append({
                 "Identificador de fila": id_despacho,
                 "Subproyecto": subp,
@@ -692,6 +709,8 @@ try:
                 "Fin": en_dt,
                 "Duracion": dur_p,
                 "Kilos": kg_val,
+                "Fuera_Plazo": fuera_plazo_p,
+                "Fecha_Fin_DT": en_dt
             })
 
         filas_tabla_despachos.append({
@@ -707,9 +726,13 @@ try:
             "Kg por procesar Fabricado": kg_fabricado,
             "Kg por galvanizar": kg_galvanizado,
             "Kg por Embalar": kg_embalaje,
+            "Kilos Programados": kg_lote,
+            "Kg_Prog_Num": kg_lote,
             "Fecha Programada": f_prog.strftime("%d/%m/%Y"),
             "Fecha Estimada Finalizar": fecha_estimada_final.strftime("%d/%m/%Y"),
             "Fecha_DT": f_prog,
+            "Fecha_Fin_DT": fecha_estimada_final,
+            "Total_Dias": dias_habiles_totales,
             "Desviacion_Dias": desviacion_dias,
             "Diagnostico": estado_desv
         })
@@ -877,7 +900,6 @@ try:
         st.markdown("### ⚡ Carga Semanal por Despacho & Capacidad de Planta")
         st.caption("Monitorea la carga lote por lote comparada con la capacidad semanal calculada según la dotación asignada.")
 
-        # Reseteo a dotación base si cambia la versión
         if st.session_state.get("dotacion_version_key") != DOTACION_VERSION:
             st.session_state.dotacion_version_key = DOTACION_VERSION
             datos_matriz = {"Proceso": PROCESOS_LINEA}
@@ -891,7 +913,6 @@ try:
 
         c_top1, c_top2 = st.columns([2, 3])
         with c_top1:
-            # DESPLEGABLE INICIA CON "Programa Despacho"
             proceso_seleccionado = st.selectbox(
                 "🎯 Selecciona el Proceso a Analizar:",
                 ["Programa Despacho"] + PROCESOS_LINEA,
@@ -901,7 +922,6 @@ try:
         with st.expander("👷 Dotación Semanal de Operarios por Proceso (Editable)", expanded=False):
             st.caption("Ajusta la cantidad de operarios por semana para actualizar la 'Capacidad Semanal Kg' que se muestra en la cabecera:")
             
-            # Si es "Programa Despacho", muestra los 7 procesos; si es un proceso individual, muestra solo su fila
             if proceso_seleccionado == "Programa Despacho":
                 df_dot_vista = st.session_state.matriz_dotacion_semanal[["Proceso"] + semanas_cols].copy()
             else:
@@ -936,7 +956,6 @@ try:
                 hh_sem_disp = oper_val * horas_sem * eficiencia
                 capacidad_dinamica_semanal[p][sem] = hh_sem_disp * ratio_p
 
-        # CAPACIDAD DE LA VISTA: SI ES PROGRAMA DESPACHO, TOMA LA DE EMBALAJE
         cap_semanal_vista = {}
         if proceso_seleccionado == "Programa Despacho":
             for sem in semanas_cols:
@@ -956,14 +975,19 @@ try:
             f_despacho_str = lote["Fecha Programada"]
 
             if proceso_seleccionado == "Programa Despacho":
-                # Kilos programados del despacho
-                kg_proc = float(lote.get("Kg_Prog_Num", 0.0))
+                kg_proc = limpiar_numero(lote.get("Kilos Programados", lote.get("Kg_Prog_Num", 0.0)))
                 cap_dia_emb = capacidad_diaria_kg.get("Embalaje", 1000.0)
-                dias_p = int(np.ceil(kg_proc / cap_dia_emb)) if (cap_dia_emb > 0 and kg_proc > 0) else 0
-                
-                # En Programa Despacho, los kilos caen en la semana de entrega de ese despacho
+                dias_p = int(lote.get("Total_Dias", 0))
+                if dias_p == 0 and kg_proc > 0 and cap_dia_emb > 0:
+                    dias_p = int(np.ceil(kg_proc / cap_dia_emb))
+
                 sem_lote = f"{f_dt_lote.isocalendar()[0]}-{f_dt_lote.isocalendar()[1]:02d}"
                 semanas_dict = {sem: (kg_proc if sem == sem_lote else 0.0) for sem in semanas_cols}
+
+                f_est_dt = lote.get("Fecha_Fin_DT", f_dt_lote)
+                desv = lote.get("Desviacion_Dias", 0)
+                fuera_plazo = (desv > 0)
+                f_est_str = f_est_dt.strftime("%d/%m/%Y") if pd.notna(f_est_dt) else str(lote.get("Fecha Estimada Finalizar", "-"))
             else:
                 mapa_col_kg = {
                     "Ingeniería": "Kg por cargar (Ing)",
@@ -974,22 +998,45 @@ try:
                     "Galvanizado": "Kg por galvanizar",
                     "Embalaje": "Kg por Embalar"
                 }
-                kg_proc = lote.get(mapa_col_kg.get(proceso_seleccionado, ""), 0.0)
+                kg_proc = limpiar_numero(lote.get(mapa_col_kg.get(proceso_seleccionado, ""), 0.0))
                 cap_dia = capacidad_diaria_kg.get(proceso_seleccionado, 1000.0)
                 dias_p = int(np.ceil(kg_proc / cap_dia)) if cap_dia > 0 and kg_proc > 0 else 0
+
                 df_filtro_lote = df_semanal_desglose[
                     (df_semanal_desglose["Identificador de fila"] == id_f) & 
                     (df_semanal_desglose["Proceso"] == proceso_seleccionado)
                 ]
                 semanas_dict = df_filtro_lote.groupby("Semana")["Kilos"].sum().to_dict() if not df_filtro_lote.empty else {}
 
-            # FILTRAR EXCLUSIVAMENTE LOTES CON KILOS > 50 KG
+                rec_proc = df_gantt_vista[
+                    (df_gantt_vista["Identificador de fila"] == id_f) & 
+                    (df_gantt_vista["Proceso"] == proceso_seleccionado)
+                ]
+                if not rec_proc.empty:
+                    f_est_val = rec_proc["Fin"].values[0]
+                    if isinstance(f_est_val, np.datetime64):
+                        f_est_val = pd.Timestamp(f_est_val)
+                    f_est_dt = f_est_val
+                    fuera_plazo = bool(rec_proc["Fuera_Plazo"].values[0]) if "Fuera_Plazo" in rec_proc.columns else False
+                    f_est_str = f_est_dt.strftime("%d/%m/%Y")
+                else:
+                    f_est_dt = f_dt_lote
+                    fuera_plazo = False
+                    f_est_str = "-"
+
+            # Indicador: muestra ⚠️ si está fuera de plazo para llegar a fecha despacho; si va bien no muestra nada
+            if fuera_plazo:
+                fecha_est_disp = f'{f_est_str} <span style="color:#dc2626; font-size:12px;" title="Fuera de plazo para llegar a fecha despacho">⚠️</span>'
+            else:
+                fecha_est_disp = f_est_str
+
             if kg_proc > 50.0:
                 fila_reg = {
                     "Identificador de fila": id_f,
                     "Subproyecto": subp,
                     "Fecha_DT": f_dt_lote,
                     "Fecha_Despacho": f_despacho_str,
+                    "Fecha_Est_Display": fecha_est_disp,
                     "Cant_Dias": dias_p,
                     "Kilos_Procesar": kg_proc,
                 }
@@ -1003,10 +1050,8 @@ try:
         if df_lotes_tab2.empty:
             st.info(f"🎉 No hay lotes pendientes en **{proceso_seleccionado}** (Kilos ≤ 50 kg).")
         else:
-            # ORDENAMIENTO ASCENDENTE: 1° FECHA PROGRAMADA, 2° SUBPROYECTO
             df_lotes_tab2 = df_lotes_tab2.sort_values(by=["Fecha_DT", "Subproyecto"], ascending=[True, True])
 
-            # RENDERIZADO COMPACTO DE 5 COLUMNAS FIJAS Y SEMANAS MÓVILES
             html_tab2 = render_tabla_carga_proceso_html(
                 df_lotes_proc=df_lotes_tab2,
                 semanas_cols=semanas_cols,
