@@ -12,9 +12,19 @@ import numpy as np
 st.set_page_config(page_title="Control de Despachos & Fechas Estimadas", layout="wide")
 
 # -------------------------------------------------------------
-# 0. CONFIGURACIÓN DE LOS 7 PROCESOS CLAVE
+# 0. CONFIGURACIÓN DE PROCESOS Y PRECEDENCIAS
 # -------------------------------------------------------------
 PROCESOS_LINEA = [
+    "Ingeniería",
+    "CNCL",
+    "DoblezL",
+    "Soldadura",
+    "Fabricado",
+    "Galvanizado",
+    "Embalaje"
+]
+
+PROCESOS_GANTT = [
     "Ingeniería",
     "CNCL",
     "DoblezL",
@@ -34,14 +44,56 @@ def limpiar_texto(txt):
     txt = unicodedata.normalize('NFKD', txt).encode('ASCII', 'ignore').decode('utf-8')
     return re.sub(r'[^a-zA-Z0-9]', '', txt).lower()
 
-def get_col_flexible(cols, patterns):
-    for c in cols:
-        c_clean = c.lower().replace("_", "").replace(" ", "").strip()
-        for pat in patterns:
-            pat_clean = pat.lower().replace("_", "").replace(" ", "").strip()
-            if pat_clean in c_clean:
+def buscar_columna_kilos(cols, proceso_clave, nombres_prioritarios):
+    # 1. Prioridad: Coincidencia exacta con nombres esperados (sin importar mayúsculas, espacios o guiones)
+    for target in nombres_prioritarios:
+        t_clean = target.lower().replace("_", "").replace(" ", "").strip()
+        for c in cols:
+            c_clean = c.lower().replace("_", "").replace(" ", "").strip()
+            if c_clean == t_clean:
                 return c
+
+    # 2. Prioridad: Columnas que contengan 'kilo' o 'kg' Y la palabra clave del proceso
+    candidatos_kilos = []
+    for c in cols:
+        c_low = c.lower().replace("_", " ")
+        if ("kilo" in c_low or "kg" in c_low) and proceso_clave in c_low:
+            candidatos_kilos.append(c)
+    if candidatos_kilos:
+        for cand in candidatos_kilos:
+            if "por" in cand.lower():
+                return cand
+        return candidatos_kilos[0]
+
+    # 3. Fallback: Evitar columnas de verificación o checkbox
+    for c in cols:
+        c_low = c.lower().replace("_", " ")
+        if proceso_clave in c_low and not any(neg in c_low for neg in ["check", "¿", "?", "listo", "ok", "estado", "pasa"]):
+            return c
+
     return None
+
+def limpiar_numero(val):
+    if pd.isna(val) or val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return max(0.0, float(val))
+    val_str = str(val).strip()
+    if not val_str or val_str.lower() in ["none", "nan", "-", "false"]:
+        return 0.0
+    if val_str.lower() == "true":
+        return 0.0
+    if "," in val_str and "." in val_str:
+        if val_str.rfind(",") > val_str.rfind("."):
+            val_str = val_str.replace(".", "").replace(",", ".")
+        else:
+            val_str = val_str.replace(",", "")
+    elif "," in val_str:
+        val_str = val_str.replace(",", ".")
+    try:
+        return max(0.0, float(val_str))
+    except Exception:
+        return 0.0
 
 # -------------------------------------------------------------
 # 1. CONEXIÓN A SMARTSHEET
@@ -256,7 +308,7 @@ try:
 
     cols_backlog = df_backlog_raw.columns.tolist()
 
-    # Detección de columnas de Backlog con prioridad exacta
+    # Detección de columnas de identificación
     col_id_fila = next((c for c in cols_backlog if "identificador" in c.lower() and "fila" in c.lower()), None)
     if not col_id_fila:
         col_id_fila = next((c for c in cols_backlog if "identificador" in c.lower()), None)
@@ -275,16 +327,26 @@ try:
         col_fecha_prog = next((c for c in cols_backlog if "fecha" in c.lower()), None)
     col_despacho_real = next((c for c in cols_backlog if "despacho" in c.lower() and ("real" in c.lower() or "fecha" in c.lower())), None)
     col_kg_prog = next((c for c in cols_backlog if "kilos" in c.lower() and "programad" in c.lower()), None)
-
-    # DETECCIÓN DE LAS COLUMNAS CALCULADAS DEL PROGRAMA DESPACHO
-    col_kg_ing = get_col_flexible(cols_backlog, ["kilosporcargar", "porcargar", "kilosporcargar_"])
-    col_kg_cncl = get_col_flexible(cols_backlog, ["kilosporcncl", "porcncl"])
-    col_kg_doblez = get_col_flexible(cols_backlog, ["kilospordoblezl", "pordoblezl", "pordoblez", "kilospordoblez"])
-    col_kg_sold = get_col_flexible(cols_backlog, ["kilosporsoldadura", "porsoldadura"])
-    col_kg_fab = get_col_flexible(cols_backlog, ["kilosporfabricar", "porfabricar", "porfabricado"])
-    col_kg_galv = get_col_flexible(cols_backlog, ["kilosporgalvanizar", "porgalvanizar"])
-    col_kg_emb = get_col_flexible(cols_backlog, ["kilosporembalar", "porembalar"])
     col_orden = next((c for c in cols_backlog if "orden" in c.lower() and "proceder" in c.lower()), None)
+
+    # DETECCIÓN ESTRICTA Y JERÁRQUICA DE COLUMNAS DE KILOS (EVITA CHECKBOXES)
+    col_kg_ing = buscar_columna_kilos(cols_backlog, "cargar", ["Kilos por Cargar_", "Kilos por Cargar"])
+    col_kg_cncl = buscar_columna_kilos(cols_backlog, "cncl", ["Kilos por CNCL", "Kilos por CNCL_"])
+    col_kg_doblez = buscar_columna_kilos(cols_backlog, "doblez", ["Kilos por DoblezL", "Kilos por Doblez", "Kilos por Doblez L"])
+    col_kg_sold = buscar_columna_kilos(cols_backlog, "soldadura", ["Kilos por Soldadura"])
+    col_kg_fab = buscar_columna_kilos(cols_backlog, "fabricar", ["Kilos por Fabricar", "Kilos por Fabricado"])
+    col_kg_galv = buscar_columna_kilos(cols_backlog, "galvanizar", ["Kilos por Galvanizar", "Kilos por Galvanizado"])
+    col_kg_emb = buscar_columna_kilos(cols_backlog, "embalar", ["Kilos por Embalar", "Kilos por Embalaje"])
+
+    # Auditoría en barra lateral
+    with st.sidebar.expander("🔍 Columnas de Kilos Vinculadas", expanded=False):
+        st.write(f"**Ingeniería:** `{col_kg_ing}`")
+        st.write(f"**CNCL:** `{col_kg_cncl}`")
+        st.write(f"**DoblezL:** `{col_kg_doblez}`")
+        st.write(f"**Soldadura:** `{col_kg_sold}`")
+        st.write(f"**Fabricado:** `{col_kg_fab}`")
+        st.write(f"**Galvanizado:** `{col_kg_galv}`")
+        st.write(f"**Embalaje:** `{col_kg_emb}`")
 
     valido_fecha_prog = (
         df_backlog_raw[col_fecha_prog].notna() & 
@@ -307,7 +369,6 @@ try:
     df_backlog_activo["Mes_Entrega"] = df_backlog_activo["Fecha_DT"].dt.strftime("%Y-%m")
     df_backlog_activo["Kg_Prog_Num"] = pd.to_numeric(df_backlog_activo[col_kg_prog], errors='coerce').fillna(0)
 
-    # Identificación de Proyecto y Nombre
     if col_proyecto:
         df_backlog_activo["Proyecto_Codigo"] = df_backlog_activo[col_proyecto].fillna("").astype(str).str.strip()
     else:
@@ -338,7 +399,7 @@ try:
     mes_seleccionado = st.sidebar.selectbox("Mostrar despachos desde:", options=meses_disponibles, index=indice_defecto)
     df_backlog_horizonte = df_backlog_activo[df_backlog_activo["Mes_Entrega"] >= mes_seleccionado].copy()
 
-    # Productividad (Kg/HH)
+    # Productividad
     col_prod_proc = next((c for c in df_prod_raw.columns if "proceso" in c.lower() and "simulador" in c.lower()), df_prod_raw.columns[0])
     col_prod_kghh = next((c for c in df_prod_raw.columns if "kg" in c.lower() and "hh" in c.lower()), df_prod_raw.columns[1])
     
@@ -352,7 +413,7 @@ try:
                     ratios_productividad[p_oficial] = float(kghh_val)
 
     # -------------------------------------------------------------
-    # 4. CAPACIDADES DIARIAS Y MOTOR DE TRASLAPES CON REGLAS
+    # 4. CAPACIDADES DIARIAS Y RUTA CRÍTICA
     # -------------------------------------------------------------
     capacidad_diaria_kg = {}
     capacidad_semanal_kg = {}
@@ -375,26 +436,17 @@ try:
         proy_display = str(lote["Proyecto_Display"])
         proy_nombre = str(lote["Proyecto_Nombre"])
 
-        # LECTURA DIRECTA DE LOS KILOS CALCULADOS DE LA PLANILLA
-        kg_por_cargar_ing = pd.to_numeric(lote.get(col_kg_ing, 0), errors='coerce') if col_kg_ing else 0.0
-        kg_cncl = pd.to_numeric(lote.get(col_kg_cncl, 0), errors='coerce') if col_kg_cncl else 0.0
-        kg_doblez = pd.to_numeric(lote.get(col_kg_doblez, 0), errors='coerce') if col_kg_doblez else 0.0
-        kg_soldadura = pd.to_numeric(lote.get(col_kg_sold, 0), errors='coerce') if col_kg_sold else 0.0
-        kg_fabricado = pd.to_numeric(lote.get(col_kg_fab, 0), errors='coerce') if col_kg_fab else 0.0
-        kg_galvanizado = pd.to_numeric(lote.get(col_kg_galv, 0), errors='coerce') if col_kg_galv else 0.0
-        kg_embalaje = pd.to_numeric(lote.get(col_kg_emb, 0), errors='coerce') if col_kg_emb else 0.0
-        kg_orden_lote = pd.to_numeric(lote.get(col_orden, 0), errors='coerce') if col_orden else kg_lote
+        # LECTURA ROBUSTA DIRECTA DE KILOS CON FUNCIÓN LIMPIADORA
+        kg_por_cargar_ing = limpiar_numero(lote.get(col_kg_ing)) if col_kg_ing else 0.0
+        kg_cncl = limpiar_numero(lote.get(col_kg_cncl)) if col_kg_cncl else 0.0
+        kg_doblez = limpiar_numero(lote.get(col_kg_doblez)) if col_kg_doblez else 0.0
+        kg_soldadura = limpiar_numero(lote.get(col_kg_sold)) if col_kg_sold else 0.0
+        kg_fabricado = limpiar_numero(lote.get(col_kg_fab)) if col_kg_fab else 0.0
+        kg_galvanizado = limpiar_numero(lote.get(col_kg_galv)) if col_kg_galv else 0.0
+        kg_embalaje = limpiar_numero(lote.get(col_kg_emb)) if col_kg_emb else 0.0
+        kg_orden_lote = limpiar_numero(lote.get(col_orden)) if col_orden else kg_lote
 
-        kg_por_cargar_ing = 0.0 if pd.isna(kg_por_cargar_ing) else max(0.0, float(kg_por_cargar_ing))
-        kg_cncl = 0.0 if pd.isna(kg_cncl) else max(0.0, float(kg_cncl))
-        kg_doblez = 0.0 if pd.isna(kg_doblez) else max(0.0, float(kg_doblez))
-        kg_soldadura = 0.0 if pd.isna(kg_soldadura) else max(0.0, float(kg_soldadura))
-        kg_fabricado = 0.0 if pd.isna(kg_fabricado) else max(0.0, float(kg_fabricado))
-        kg_galvanizado = 0.0 if pd.isna(kg_galvanizado) else max(0.0, float(kg_galvanizado))
-        kg_embalaje = 0.0 if pd.isna(kg_embalaje) else max(0.0, float(kg_embalaje))
-        kg_orden_lote = 0.0 if pd.isna(kg_orden_lote) else max(0.0, float(kg_orden_lote))
-
-        # Duración teórica en días hábiles
+        # Duraciones en días hábiles
         d_ing = kg_por_cargar_ing / capacidad_diaria_kg["Ingeniería"]
         d_cncl = kg_cncl / capacidad_diaria_kg["CNCL"]
         d_doblez = kg_doblez / capacidad_diaria_kg["DoblezL"]
@@ -404,50 +456,49 @@ try:
         d_emb = kg_embalaje / capacidad_diaria_kg["Embalaje"]
 
         # -------------------------------------------------------------
-        # MODELO DE TRASLAPES Y REGLAS DE PRECEDENCIA
+        # TRASLAPES Y BARRERAS DE FIN
         # -------------------------------------------------------------
-        # 1. Ingeniería
         t_ing_start = 0.0
         t_ing_end = d_ing
 
-        # 2. CNCL (inicia tras 50% de Ingeniería)
+        # CNCL
         t_cncl_start = t_ing_start + 0.50 * d_ing
         t_cncl_end = t_cncl_start + d_cncl
 
-        # 3. DoblezL: cuando CNCL lleve 30% avance puede comenzar a trabajar
+        # DoblezL: cuando CNCL lleve 30% avance puede comenzar
         t_doblez_start = t_cncl_start + 0.30 * d_cncl
         t_doblez_end = t_doblez_start + d_doblez
 
-        # 4. Soldadura: tras DoblezL (al 25%) y CNCL (al 50%)
+        # Soldadura
         t_sold_start = max(t_doblez_start + 0.25 * d_doblez, t_cncl_start + 0.50 * d_cncl)
         t_sold_end = t_sold_start + d_sold
 
-        # 5. Fabricado: inicia con traslape de soldadura (ej. 50%)
+        # Fabricado
         t_fab_start = t_sold_start + 0.50 * d_sold
         t_fab_end = t_fab_start + d_fab
 
-        # REGLA 4: ningún proceso antes de fabricado puede sobrepasar la fecha fin de fabricado
+        # Regla 4: ningún proceso antes de fabricado puede sobrepasar la fecha fin de fabricado
         max_ante_fab = max(t_ing_end, t_cncl_end, t_doblez_end, t_sold_end)
         if t_fab_end < max_ante_fab:
             t_fab_end = max_ante_fab
             if d_fab > 0:
                 t_fab_start = max(t_fab_start, t_fab_end - d_fab)
 
-        # 6. Galvanizado: inicia tras avance de fabricado
+        # Galvanizado
         t_galv_start = max(t_fab_start + 0.50 * d_fab, t_sold_end) if d_fab > 0 else t_sold_end
         t_galv_end = t_galv_start + d_galv
 
-        # REGLA 5: el proceso de fabricado no puede sobrepasar la fecha fin de galvanizado
+        # Regla 5: fabricado no puede sobrepasar la fecha fin de galvanizado
         if t_galv_end < t_fab_end:
             t_galv_end = t_fab_end
             if d_galv > 0:
                 t_galv_start = max(t_galv_start, t_galv_end - d_galv)
 
-        # 7. Embalaje: inicia tras avance de galvanizado
+        # Embalaje
         t_emb_start = max(t_galv_start + 0.30 * d_galv, t_fab_end) if d_galv > 0 else t_galv_end
         t_emb_end = t_emb_start + d_emb
 
-        # REGLA 6: el proceso de galvanizado no puede sobrepasar la fecha fin de embalaje
+        # Regla 6: galvanizado no puede sobrepasar la fecha fin de embalaje
         if t_emb_end < t_galv_end:
             t_emb_end = t_galv_end
             if d_emb > 0:
@@ -455,7 +506,6 @@ try:
 
         dias_habiles_totales = int(np.ceil(max(0.0, t_emb_end)))
 
-        # Fechas y Desviaciones
         if dias_habiles_totales == 0:
             fecha_inicio_guia = f_prog
             fecha_estimada_final = f_prog
@@ -592,7 +642,6 @@ try:
         "emb": df_mostrar["Kg por Embalar"].sum(),
     }
 
-    # Renderizar la tabla principal
     tabla_html = renderizar_tabla_html(df_mostrar, totales_dict)
     components.html(tabla_html, height=580, scrolling=False)
 
@@ -606,7 +655,6 @@ try:
     lotes_visibles = df_mostrar["Identificador de fila"].unique()
     df_gantt_filtrado = df_gantt_total[df_gantt_total["Identificador de fila"].isin(lotes_visibles)].copy()
 
-    # Distribuir kilos en días hábiles
     def calcular_kilos_semanales(df_g):
         rows_dist = []
         for _, r in df_g.iterrows():
@@ -658,7 +706,6 @@ try:
             cap_d = capacidad_diaria_kg.get(proc, 1000.0)
             dias_calculados[proc] = int(np.ceil(kg_tot_proc / cap_d)) if cap_d > 0 and kg_tot_proc > 0 else 0
 
-    # Renderizado HTML del cuadro
     html_cuadro = renderizar_cuadro_semanal_html(
         piv_data=piv_dict,
         dias_dict=dias_calculados,
@@ -667,7 +714,6 @@ try:
     )
     components.html(html_cuadro, height=360, scrolling=False)
 
-    # Botón de descarga CSV
     st.download_button(
         label="📥 Descargar Plan de Despachos (CSV)",
         data=df_resultado.to_csv(index=False).encode('utf-8'),
