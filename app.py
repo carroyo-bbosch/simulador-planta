@@ -191,6 +191,119 @@ thead th {{ background-color:#fce5cd; color:#333; position:sticky; top:0; z-inde
 </html>"""
     return html
 
+def render_tabla_carga_proceso_html(df_lotes_proc, semanas_cols, cap_por_semana):
+    tot_dias = int(df_lotes_proc["Cant_Dias"].sum()) if not df_lotes_proc.empty else 0
+    tot_kg_proc = float(df_lotes_proc["Kilos_Procesar"].sum()) if not df_lotes_proc.empty else 0.0
+    tot_por_semana = {
+        sem: float(df_lotes_proc[sem].sum()) if (not df_lotes_proc.empty and sem in df_lotes_proc.columns) else 0.0
+        for sem in semanas_cols
+    }
+
+    # 1. Capacidad Semanal (Fila 1 de thead)
+    th_caps = "".join([
+        f'<th style="top:0px; position:sticky; z-index:7; background:#f8f9fa; color:#000; text-align:right; padding:6px 10px; font-weight:bold; font-size:12px; border:1px solid #333; min-width:85px;">{cap_por_semana.get(sem, 0):,.0f}</th>'
+        for sem in semanas_cols
+    ])
+
+    # 2. Totales Semanales Arriba (Fila 2 de thead)
+    th_totals_semanas = []
+    for sem in semanas_cols:
+        val_tot = tot_por_semana[sem]
+        cap_sem = cap_por_semana.get(sem, 0.0)
+        is_over = (val_tot > cap_sem and cap_sem > 0)
+        color_css = "color: #d32f2f; font-weight: bold;" if is_over else "color: #111; font-weight: bold;"
+        val_str = f"{val_tot:,.0f}" if val_tot > 0 else "-"
+        th_totals_semanas.append(
+            f'<th style="top:29px; position:sticky; z-index:7; background:#e8eaed; padding:6px 10px; text-align:right; border:1px solid #333; font-size:12px; min-width:85px; {color_css}">{val_str}</th>'
+        )
+    th_totals = "".join(th_totals_semanas)
+
+    # 3. Encabezados de Semanas (Fila 3 de thead)
+    th_semanas = "".join([
+        f'<th style="top:58px; position:sticky; z-index:7; padding:8px 10px; text-align:center; border:1px solid #333; min-width:85px; color:#fff; background-color:#135b79;">{sem}</th>'
+        for sem in semanas_cols
+    ])
+
+    # 4. Filas del Cuerpo con 4 columnas fijas
+    filas_html = []
+    for idx, r in df_lotes_proc.iterrows():
+        id_fila = r["Identificador de fila"]
+        subp = r["Subproyecto"]
+        dias = int(r["Cant_Dias"])
+        kg_p = float(r["Kilos_Procesar"])
+
+        celdas_semanas = []
+        for sem in semanas_cols:
+            val = float(r.get(sem, 0.0))
+            cap_sem = cap_por_semana.get(sem, 0.0)
+            if val > 0:
+                is_over = (val > cap_sem and cap_sem > 0)
+                color_css = "color: #d32f2f; font-weight: bold;" if is_over else "color: #111;"
+                celdas_semanas.append(f'<td style="padding:6px 10px; text-align:right; border:1px solid #333; {color_css}">{val:,.0f}</td>')
+            else:
+                celdas_semanas.append(f'<td style="padding:6px 10px; text-align:center; border:1px solid #333; color:#777;">-</td>')
+
+        bg_col = "#ffffff" if idx % 2 == 0 else "#fafafa"
+        fila_str = (
+            f'<tr style="background:{bg_col};">'
+            f'<td style="padding:6px 8px; text-align:left; border:1px solid #333; font-weight:500; position:sticky; left:0px; width:140px; min-width:140px; max-width:140px; background:{bg_col}; z-index:3;">{id_fila}</td>'
+            f'<td style="padding:6px 8px; text-align:left; border:1px solid #333; position:sticky; left:140px; width:130px; min-width:130px; max-width:130px; background:{bg_col}; z-index:3;">{subp}</td>'
+            f'<td style="padding:6px 8px; text-align:right; border:1px solid #333; position:sticky; left:270px; width:80px; min-width:80px; max-width:80px; background:{bg_col}; z-index:3;">{dias}</td>'
+            f'<td style="padding:6px 8px; text-align:right; border:1px solid #333; font-weight:500; position:sticky; left:350px; width:120px; min-width:120px; max-width:120px; background:{bg_col}; z-index:3;">{kg_p:,.0f}</td>'
+            f'{"".join(celdas_semanas)}'
+            f'</tr>'
+        )
+        filas_html.append(fila_str)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body {{ margin:0; padding:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
+.tabla-container {{ overflow:auto; max-height:560px; border:1px solid #333; }}
+table {{ width:100%; border-collapse:collapse; font-size:12px; }}
+th, td {{ border: 1px solid #333; white-space: nowrap; }}
+thead th {{ position: sticky; }}
+</style>
+</head>
+<body>
+<div class="tabla-container">
+<table>
+<thead>
+<!-- Fila 1: Capacidad Semanal -->
+<tr style="background:#f8f9fa;">
+    <th colspan="4" style="top:0px; left:0px; position:sticky; z-index:10; background:#f8f9fa; color:#000; text-align:right; padding:6px 12px; font-weight:bold; font-size:12px; border:1px solid #333; width:470px; min-width:470px; max-width:470px;">Capacidad Semanal Kg:</th>
+    {th_caps}
+</tr>
+
+<!-- Fila 2: Totales de Carga Semanal Arriba -->
+<tr style="background:#e8eaed; font-weight:bold;">
+    <th style="top:29px; left:0px; position:sticky; z-index:10; background:#e8eaed; color:#000; text-align:left; padding:6px 8px; width:140px; min-width:140px; max-width:140px; border:1px solid #333;">TOTAL PENDIENTE</th>
+    <th style="top:29px; left:140px; position:sticky; z-index:10; background:#e8eaed; color:#000; text-align:left; padding:6px 8px; width:130px; min-width:130px; max-width:130px; border:1px solid #333;">{len(df_lotes_proc)} lotes</th>
+    <th style="top:29px; left:270px; position:sticky; z-index:10; background:#e8eaed; color:#000; text-align:right; padding:6px 8px; width:80px; min-width:80px; max-width:80px; border:1px solid #333;">{tot_dias}</th>
+    <th style="top:29px; left:350px; position:sticky; z-index:10; background:#e8eaed; color:#000; text-align:right; padding:6px 8px; width:120px; min-width:120px; max-width:120px; border:1px solid #333;">{tot_kg_proc:,.0f}</th>
+    {th_totals}
+</tr>
+
+<!-- Fila 3: Encabezados de Columna -->
+<tr style="background-color:#135b79; color:#fff;">
+    <th style="top:58px; left:0px; position:sticky; z-index:10; background-color:#135b79; text-align:left; padding:8px 8px; width:140px; min-width:140px; max-width:140px; border:1px solid #333;">Identificador de fila</th>
+    <th style="top:58px; left:140px; position:sticky; z-index:10; background-color:#135b79; text-align:left; padding:8px 8px; width:130px; min-width:130px; max-width:130px; border:1px solid #333;">Subproyecto</th>
+    <th style="top:58px; left:270px; position:sticky; z-index:10; background-color:#135b79; text-align:center; padding:8px 8px; width:80px; min-width:80px; max-width:80px; border:1px solid #333;">Cant. Días</th>
+    <th style="top:58px; left:350px; position:sticky; z-index:10; background-color:#135b79; text-align:right; padding:8px 8px; width:120px; min-width:120px; max-width:120px; border:1px solid #333;">Kilos por Procesar</th>
+    {th_semanas}
+</tr>
+</thead>
+<tbody>
+{''.join(filas_html)}
+</tbody>
+</table>
+</div>
+</body>
+</html>"""
+    return html
+
 def renderizar_cuadro_semanal_html(piv_data, dias_dict, semanas_cols, cap_semanal_dict):
     proc_labels = [
         ("Ingeniería", "1. Ingeniería"),
@@ -252,109 +365,6 @@ th, td {{ border: 1px solid #333; }}
 <tbody>
 {''.join(filas_html)}
 </tbody>
-</table>
-</div>
-</body>
-</html>"""
-    return html
-
-def render_tabla_carga_proceso_html(df_lotes_proc, semanas_cols, cap_por_semana):
-    th_caps = "".join([
-        f'<th style="background:#fff; color:#000; text-align:right; padding:5px 10px; font-weight:bold; border:none; font-size:12px; min-width:85px;">{cap_por_semana.get(sem, 0):,.0f}</th>'
-        for sem in semanas_cols
-    ])
-    
-    th_semanas = "".join([
-        f'<th style="padding:8px 10px; text-align:center; border:1px solid #333; min-width:85px; color:#fff; background-color:#135b79;">{sem}</th>'
-        for sem in semanas_cols
-    ])
-    
-    filas_html = []
-    tot_dias = 0
-    tot_kg_proc = 0.0
-    tot_por_semana = {sem: 0.0 for sem in semanas_cols}
-    
-    for idx, r in df_lotes_proc.iterrows():
-        id_fila = r["Identificador de fila"]
-        subp = r["Subproyecto"]
-        dias = int(r["Cant_Dias"])
-        kg_p = float(r["Kilos_Procesar"])
-        
-        tot_dias += dias
-        tot_kg_proc += kg_p
-        
-        celdas_semanas = []
-        for sem in semanas_cols:
-            val = float(r.get(sem, 0.0))
-            tot_por_semana[sem] += val
-            cap_sem = cap_por_semana.get(sem, 0.0)
-            
-            if val > 0:
-                is_over = (val > cap_sem and cap_sem > 0)
-                color_css = "color: #d32f2f; font-weight: bold;" if is_over else "color: #111;"
-                celdas_semanas.append(f'<td style="padding:6px 10px; text-align:right; border:1px solid #333; {color_css}">{val:,.0f}</td>')
-            else:
-                celdas_semanas.append(f'<td style="padding:6px 10px; text-align:center; border:1px solid #333; color:#777;">-</td>')
-                
-        fila_str = (
-            f'<tr style="background:#fff;">'
-            f'<td style="padding:6px 10px; text-align:left; border:1px solid #333; font-weight:500; position:sticky; left:0; background:#fff; z-index:2; min-width:130px;">{id_fila}</td>'
-            f'<td style="padding:6px 10px; text-align:left; border:1px solid #333; position:sticky; left:130px; background:#fff; z-index:2; min-width:120px;">{subp}</td>'
-            f'<td style="padding:6px 10px; text-align:right; border:1px solid #333;">{dias}</td>'
-            f'<td style="padding:6px 10px; text-align:right; border:1px solid #333; font-weight:500;">{kg_p:,.0f}</td>'
-            f'{"".join(celdas_semanas)}'
-            f'</tr>'
-        )
-        filas_html.append(fila_str)
-        
-    tfoot_celdas = []
-    for sem in semanas_cols:
-        val_tot = tot_por_semana[sem]
-        cap_sem = cap_por_semana.get(sem, 0.0)
-        is_over = (val_tot > cap_sem and cap_sem > 0)
-        color_css = "color: #d32f2f; font-weight: bold;" if is_over else "color: #111;"
-        val_str = f"{val_tot:,.0f}" if val_tot > 0 else "-"
-        tfoot_celdas.append(f'<td style="padding:6px 10px; text-align:right; border:1px solid #333; {color_css}">{val_str}</td>')
-        
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-body {{ margin:0; padding:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
-.tabla-container {{ overflow:auto; max-height:560px; border:1px solid #333; }}
-table {{ width:100%; border-collapse:collapse; font-size:12px; }}
-th, td {{ border: 1px solid #333; }}
-</style>
-</head>
-<body>
-<div class="tabla-container">
-<table>
-<thead>
-<tr style="background:#fff; border:none;">
-    <th colspan="4" style="background:#fff; color:#000; text-align:right; padding:6px 15px; font-weight:bold; border:none; font-size:12px; position:sticky; left:0; z-index:6;">Capacidad Semanal Kg:</th>
-    {th_caps}
-</tr>
-<tr style="background-color:#135b79; color:#fff;">
-    <th style="padding:8px 10px; text-align:left; position:sticky; left:0; background-color:#135b79; z-index:5; min-width:130px; border:1px solid #333;">Identificador de fila</th>
-    <th style="padding:8px 10px; text-align:left; position:sticky; left:130px; background-color:#135b79; z-index:5; min-width:120px; border:1px solid #333;">Subproyecto</th>
-    <th style="padding:8px 10px; text-align:center; min-width:80px; border:1px solid #333;">Cant. Días</th>
-    <th style="padding:8px 10px; text-align:right; min-width:105px; border:1px solid #333;">Kilos por Procesar</th>
-    {th_semanas}
-</tr>
-</thead>
-<tbody>
-{''.join(filas_html)}
-</tbody>
-<tfoot>
-<tr style="background-color:#e8eaed; font-weight:bold;">
-    <td style="padding:6px 10px; text-align:left; position:sticky; left:0; background-color:#e8eaed; z-index:2; border:1px solid #333;">TOTAL PENDIENTE</td>
-    <td style="padding:6px 10px; text-align:left; position:sticky; left:130px; background-color:#e8eaed; z-index:2; border-right:1px solid #333;">{len(df_lotes_proc)} lotes</td>
-    <td style="padding:6px 10px; text-align:right; border:1px solid #333;">{tot_dias}</td>
-    <td style="padding:6px 10px; text-align:right; border:1px solid #333;">{tot_kg_proc:,.0f}</td>
-    {''.join(tfoot_celdas)}
-</tr>
-</tfoot>
 </table>
 </div>
 </body>
@@ -450,9 +460,7 @@ try:
                 if limpiar_texto(p_oficial) in proc_str:
                     ratios_sistema[p_oficial] = float(kghh_val)
 
-    # -------------------------------------------------------------
     # BARRA LATERAL: PRODUCTIVIDAD SISTEMA VS EDITABLE
-    # -------------------------------------------------------------
     with st.sidebar.expander("⚖️ Productividad por Proceso (Kg/HH)", expanded=False):
         st.caption("Valores leídos de Smartsheet vs. simulados editables:")
         if "df_prod_ratios" not in st.session_state:
@@ -561,7 +569,6 @@ try:
         proy_display = str(lote["Proyecto_Display"])
         proy_nombre = str(lote["Proyecto_Nombre"])
 
-        # LECTURA ROBUSTA DIRECTA DE KILOS
         kg_por_cargar_ing = limpiar_numero(lote.get(col_kg_ing)) if col_kg_ing else 0.0
         kg_cncl = limpiar_numero(lote.get(col_kg_cncl)) if col_kg_cncl else 0.0
         kg_doblez = limpiar_numero(lote.get(col_kg_doblez)) if col_kg_doblez else 0.0
@@ -586,40 +593,32 @@ try:
         t_cncl_start = t_ing_start + 0.50 * d_ing
         t_cncl_end = t_cncl_start + d_cncl
 
-        # DoblezL: cuando CNCL lleve 30% avance
         t_doblez_start = t_cncl_start + 0.30 * d_cncl
         t_doblez_end = t_doblez_start + d_doblez
 
-        # Soldadura
         t_sold_start = max(t_doblez_start + 0.25 * d_doblez, t_cncl_start + 0.50 * d_cncl)
         t_sold_end = t_sold_start + d_sold
 
-        # Fabricado
         t_fab_start = t_sold_start + 0.50 * d_sold
         t_fab_end = t_fab_start + d_fab
 
-        # Regla 4: ningún proceso antes de fabricado puede sobrepasar fecha fin de fabricado
         max_ante_fab = max(t_ing_end, t_cncl_end, t_doblez_end, t_sold_end)
         if t_fab_end < max_ante_fab:
             t_fab_end = max_ante_fab
             if d_fab > 0:
                 t_fab_start = max(t_fab_start, t_fab_end - d_fab)
 
-        # Galvanizado
         t_galv_start = max(t_fab_start + 0.50 * d_fab, t_sold_end) if d_fab > 0 else t_sold_end
         t_galv_end = t_galv_start + d_galv
 
-        # Regla 5: fabricado no puede sobrepasar fecha fin de galvanizado
         if t_galv_end < t_fab_end:
             t_galv_end = t_fab_end
             if d_galv > 0:
                 t_galv_start = max(t_galv_start, t_galv_end - d_galv)
 
-        # Embalaje
         t_emb_start = max(t_galv_start + 0.30 * d_galv, t_fab_end) if d_galv > 0 else t_galv_end
         t_emb_end = t_emb_start + d_emb
 
-        # Regla 6: galvanizado no puede sobrepasar fecha fin de embalaje
         if t_emb_end < t_galv_end:
             t_emb_end = t_galv_end
             if d_emb > 0:
@@ -858,7 +857,6 @@ try:
         st.markdown("### ⚡ Carga Semanal por Despacho & Capacidad de Planta")
         st.caption("Monitorea la carga lote por lote comparada con la capacidad semanal calculada según la dotación asignada.")
 
-        # Inicialización de matriz de dotación semanal en sesión
         if "matriz_dotacion_semanal" not in st.session_state:
             datos_matriz = {"Proceso": PROCESOS_LINEA}
             for sem in semanas_cols:
@@ -888,7 +886,6 @@ try:
             )
             st.session_state.matriz_dotacion_semanal.update(matriz_dot_edit)
 
-        # Cálculo dinámico de capacidades por semana
         capacidad_dinamica_semanal = {p: {} for p in PROCESOS_LINEA}
         for p in PROCESOS_LINEA:
             ratio_p = ratios_activos.get(p, 80.0)
@@ -898,7 +895,6 @@ try:
                 hh_sem_disp = oper_val * horas_sem * eficiencia
                 capacidad_dinamica_semanal[p][sem] = hh_sem_disp * ratio_p
 
-        # Capacidad por semana para la vista activa
         cap_semanal_vista = {}
         if proceso_seleccionado == "Consolidado (Todos los Procesos)":
             for sem in semanas_cols:
@@ -907,11 +903,9 @@ try:
             for sem in semanas_cols:
                 cap_semanal_vista[sem] = capacidad_dinamica_semanal[proceso_seleccionado].get(sem, 1000.0)
 
-        # Construcción de la tabla de lotes para el proceso seleccionado
         df_lotes_tab2_list = []
         df_gantt_vista = df_gantt_total if df_mostrar.empty else df_gantt_total[df_gantt_total["Identificador de fila"].isin(df_mostrar["Identificador de fila"])]
 
-        # Desglose de kilos por semana para todos los lotes
         df_semanal_desglose = calcular_kilos_semanales(df_gantt_vista)
 
         for _, lote in df_mostrar.iterrows():
@@ -928,7 +922,8 @@ try:
                     lote.get("Kg por galvanizar", 0),
                     lote.get("Kg por Embalar", 0),
                 ])
-                dias_p = int(lote.get("Desviacion_Dias", 0)) # o duración acumulada
+                cap_dia_cons = sum([capacidad_diaria_kg.get(p, 1000.0) for p in PROCESOS_LINEA])
+                dias_p = int(np.ceil(kg_proc / cap_dia_cons)) if cap_dia_cons > 0 and kg_proc > 0 else 0
                 df_filtro_lote = df_semanal_desglose[df_semanal_desglose["Identificador de fila"] == id_f]
             else:
                 mapa_col_kg = {
@@ -948,28 +943,31 @@ try:
                     (df_semanal_desglose["Proceso"] == proceso_seleccionado)
                 ]
 
-            semanas_dict = df_filtro_lote.groupby("Semana")["Kilos"].sum().to_dict() if not df_filtro_lote.empty else {}
+            # REGLA: FILTRAR PARA MOSTRAR EXCLUSIVAMENTE FILAS CON KILOS POR PROCESAR > 0
+            if kg_proc > 0.001:
+                semanas_dict = df_filtro_lote.groupby("Semana")["Kilos"].sum().to_dict() if not df_filtro_lote.empty else {}
+                fila_reg = {
+                    "Identificador de fila": id_f,
+                    "Subproyecto": subp,
+                    "Cant_Dias": dias_p,
+                    "Kilos_Procesar": kg_proc,
+                }
+                for sem in semanas_cols:
+                    fila_reg[sem] = semanas_dict.get(sem, 0.0)
 
-            fila_reg = {
-                "Identificador de fila": id_f,
-                "Subproyecto": subp,
-                "Cant_Dias": dias_p,
-                "Kilos_Procesar": kg_proc,
-            }
-            for sem in semanas_cols:
-                fila_reg[sem] = semanas_dict.get(sem, 0.0)
-
-            df_lotes_tab2_list.append(fila_reg)
+                df_lotes_tab2_list.append(fila_reg)
 
         df_lotes_tab2 = pd.DataFrame(df_lotes_tab2_list)
 
-        # Renderizar la tabla con la estructura exacta de image_b53656.png
-        html_tab2 = render_tabla_carga_proceso_html(
-            df_lotes_proc=df_lotes_tab2,
-            semanas_cols=semanas_cols,
-            cap_por_semana=cap_semanal_vista
-        )
-        components.html(html_tab2, height=600, scrolling=False)
+        if df_lotes_tab2.empty:
+            st.info(f"🎉 No hay lotes pendientes con trabajo por procesar en **{proceso_seleccionado}** (Kilos por procesar = 0).")
+        else:
+            html_tab2 = render_tabla_carga_proceso_html(
+                df_lotes_proc=df_lotes_tab2,
+                semanas_cols=semanas_cols,
+                cap_por_semana=cap_semanal_vista
+            )
+            components.html(html_tab2, height=600, scrolling=False)
 
 except Exception as e:
     st.error(f"Error procesando los datos: {e}")
