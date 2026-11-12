@@ -44,7 +44,17 @@ DOTACION_BASE_DEFAULT = {
     "Embalaje": 8
 }
 
-DOTACION_VERSION = "v4_prog_despacho_compact"
+RATIO_FALLBACK_DEFAULT = {
+    "Ingeniería": 120.0,
+    "CNCL": 120.0,
+    "DoblezL": 100.0,
+    "Soldadura": 60.0,
+    "Fabricado": 1500.0,
+    "Galvanizado": 2000.0,
+    "Embalaje": 350.0
+}
+
+DOTACION_VERSION = "v5_edd_fecha_embalaje"
 
 # -------------------------------------------------------------
 # 1. CONEXIÓN A SMARTSHEET (DEFINICIÓN GLOBAL)
@@ -73,7 +83,7 @@ def buscar_columna_kilos(cols, proceso_clave, nombres_prioritarios):
     candidatos_kilos = []
     for c in cols:
         c_low = c.lower().replace("_", " ")
-        if ("kilo" in c_low or "kg" in c_low) and proceso_clave in c_low:
+        if ("kilo" in c_low or "kg" in c_low) and proceso_clave in c_low and "fecha" not in c_low:
             candidatos_kilos.append(c)
     if candidatos_kilos:
         for cand in candidatos_kilos:
@@ -83,7 +93,7 @@ def buscar_columna_kilos(cols, proceso_clave, nombres_prioritarios):
 
     for c in cols:
         c_low = c.lower().replace("_", " ")
-        if proceso_clave in c_low and not any(neg in c_low for neg in ["check", "¿", "?", "listo", "ok", "estado", "pasa"]):
+        if proceso_clave in c_low and not any(neg in c_low for neg in ["check", "¿", "?", "listo", "ok", "estado", "pasa", "fecha"]):
             return c
 
     return None
@@ -117,14 +127,15 @@ def renderizar_tabla_html(df_mostrar, totales):
     filas = []
     for idx, r in df_mostrar.iterrows():
         bg = "#ffffff" if idx % 2 == 0 else "#fafafa"
-        color_diag = "#b7e1cd" if ("A Tiempo" in r["Diagnostico"] or "Completado" in r["Diagnostico"]) else "#f4c7c3"
+        color_diag = "#b7e1cd" if ("A Tiempo" in r["Diagnostico"] or "Completado" in r["Diagnostico"] or "Embalado" in r["Diagnostico"]) else "#f4c7c3"
         color_ing = "#d62728" if r["Kg por cargar (Ing)"] > 0 else "#555"
         color_final = "#d62728" if r["Desviacion_Dias"] > 0 else "#2ca02c"
+        ruta_info = r.get("Ruta_Detalle", "")
         
         filas.append(
             f'<tr style="background-color:{bg}; border-bottom:1px solid #eee;">'
-            f'<td style="padding:8px 6px; text-align:left; font-weight:600; position:sticky; left:0; background-color:{bg}; z-index:2; border-right:1px solid #ddd;">{r["Identificador de fila"]}</td>'
-            f'<td style="padding:8px 6px; text-align:left; position:sticky; left:130px; background-color:{bg}; z-index:2; border-right:1px solid #ddd;">{r["Subproyecto"]}</td>'
+            f'<td title="{ruta_info}" style="padding:8px 6px; text-align:left; font-weight:600; position:sticky; left:0; background-color:{bg}; z-index:2; border-right:1px solid #ddd;">{r["Identificador de fila"]}</td>'
+            f'<td title="{ruta_info}" style="padding:8px 6px; text-align:left; position:sticky; left:130px; background-color:{bg}; z-index:2; border-right:1px solid #ddd;">{r["Subproyecto"]}</td>'
             f'<td style="padding:8px 6px; text-align:right;">{r["Kg Orden Proceder"]:,.0f}</td>'
             f'<td style="padding:8px 6px; text-align:right; font-weight:500; color:{color_ing};">{r["Kg por cargar (Ing)"]:,.0f}</td>'
             f'<td style="padding:8px 6px; text-align:right;">{r["Kg por procesar CNCL"]:,.0f}</td>'
@@ -234,7 +245,7 @@ def render_tabla_carga_proceso_html(df_lotes_proc, semanas_cols, cap_por_semana)
         for sem in semanas_cols
     ])
 
-    # 4. Filas del Cuerpo con 6 columnas compactas optimizadas
+    # 4. Filas del Cuerpo con 6 columnas compactas fijas
     filas_html = []
     for idx, r in df_lotes_proc.iterrows():
         id_fila = r["Identificador de fila"]
@@ -243,6 +254,7 @@ def render_tabla_carga_proceso_html(df_lotes_proc, semanas_cols, cap_por_semana)
         f_est_disp = r.get("Fecha_Est_Display", "-")
         dias = int(r["Cant_Dias"])
         kg_p = float(r["Kilos_Procesar"])
+        ruta_tooltip = r.get("Ruta_Tooltip", "")
 
         celdas_semanas = []
         for sem in semanas_cols:
@@ -262,8 +274,8 @@ def render_tabla_carga_proceso_html(df_lotes_proc, semanas_cols, cap_por_semana)
         bg_col = "#ffffff" if idx % 2 == 0 else "#fafbfc"
         fila_str = (
             f'<tr class="data-row" style="background:{bg_col};">'
-            f'<td style="padding:5px 6px; text-align:left; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; font-weight:600; color:#0f172a; position:sticky; left:0px; width:105px; min-width:105px; max-width:105px; background:{bg_col}; z-index:3; font-size:11px;">{id_fila}</td>'
-            f'<td style="padding:5px 6px; text-align:left; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; color:#334155; position:sticky; left:105px; width:95px; min-width:95px; max-width:95px; background:{bg_col}; z-index:3; font-size:11px;">{subp}</td>'
+            f'<td title="{ruta_tooltip}" style="padding:5px 6px; text-align:left; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; font-weight:600; color:#0f172a; position:sticky; left:0px; width:105px; min-width:105px; max-width:105px; background:{bg_col}; z-index:3; font-size:11px;">{id_fila}</td>'
+            f'<td title="{ruta_tooltip}" style="padding:5px 6px; text-align:left; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; color:#334155; position:sticky; left:105px; width:95px; min-width:95px; max-width:95px; background:{bg_col}; z-index:3; font-size:11px;">{subp}</td>'
             f'<td style="padding:5px 4px; text-align:center; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; color:#334155; position:sticky; left:200px; width:80px; min-width:80px; max-width:80px; background:{bg_col}; z-index:3; font-size:11px;">{f_desp}</td>'
             f'<td style="padding:5px 4px; text-align:center; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; color:#0f172a; position:sticky; left:280px; width:90px; min-width:90px; max-width:90px; background:{bg_col}; z-index:3; font-size:11px; font-weight:500;">{f_est_disp}</td>'
             f'<td style="padding:5px 4px; text-align:right; border-bottom:1px solid #e2e8f0; border-right:1px solid #e2e8f0; color:#475569; position:sticky; left:370px; width:50px; min-width:50px; max-width:50px; background:{bg_col}; z-index:3; font-size:11px;">{dias}</td>'
@@ -461,14 +473,19 @@ try:
     col_despacho_real = next((c for c in cols_backlog if "despacho" in c.lower() and ("real" in c.lower() or "fecha" in c.lower())), None)
     col_orden = next((c for c in cols_backlog if "orden" in c.lower() and "proceder" in c.lower()), None)
 
+    # DETECCIÓN DE FECHA EMBALAJE EN PROGRAMA DESPACHO
+    col_fecha_embalaje = next((c for c in cols_backlog if "fecha" in c.lower() and "embalaje" in c.lower()), None)
+    if not col_fecha_embalaje:
+        col_fecha_embalaje = next((c for c in cols_backlog if "embalaje" in c.lower() and ("f." in c.lower() or "real" in c.lower() or "termino" in c.lower())), None)
+
     # DETECCIÓN DE COLUMNAS DE KILOS DEL PROGRAMA DESPACHO
     col_kg_prog = buscar_columna_kilos(cols_backlog, "programad", [
         "Kilos Programados", "Kilos Programado", "Kilos programados", "Kg Programados", "Kg. Programados", "Kilos Programados Despacho"
     ])
     if not col_kg_prog:
-        col_kg_prog = next((c for c in cols_backlog if "programad" in c.lower() and ("kilo" in c.lower() or "kg" in c.lower())), None)
+        col_kg_prog = next((c for c in cols_backlog if "programad" in c.lower() and ("kilo" in c.lower() or "kg" in c.lower()) and "fecha" not in c.lower()), None)
     if not col_kg_prog:
-        col_kg_prog = next((c for c in cols_backlog if "kilos" in c.lower() and "programad" in c.lower()), None)
+        col_kg_prog = next((c for c in cols_backlog if "despach" in c.lower() and ("kilo" in c.lower() or "kg" in c.lower()) and "fecha" not in c.lower()), None)
 
     col_kg_ing = buscar_columna_kilos(cols_backlog, "cargar", ["Kilos por Cargar_", "Kilos por Cargar"])
     col_kg_cncl = buscar_columna_kilos(cols_backlog, "cncl", ["Kilos por CNCL", "Kilos por CNCL_"])
@@ -496,19 +513,23 @@ try:
         st.caption("Valores leídos de Smartsheet vs. simulados editables:")
         if "df_prod_ratios" not in st.session_state:
             st.session_state.df_prod_ratios = pd.DataFrame([
-                {"Proceso": p, "Kg/HH Sistema": ratios_sistema.get(p, 80.0), "Kg/HH Simulado": ratios_sistema.get(p, 80.0)}
+                {
+                    "Proceso": p,
+                    "Kg/HH Sistema": ratios_sistema.get(p, RATIO_FALLBACK_DEFAULT.get(p, 100.0)),
+                    "Kg/HH Simulado": ratios_sistema.get(p, RATIO_FALLBACK_DEFAULT.get(p, 100.0))
+                }
                 for p in PROCESOS_LINEA
             ])
         else:
             for p in PROCESOS_LINEA:
-                st.session_state.df_prod_ratios.loc[st.session_state.df_prod_ratios["Proceso"] == p, "Kg/HH Sistema"] = ratios_sistema.get(p, 80.0)
+                st.session_state.df_prod_ratios.loc[st.session_state.df_prod_ratios["Proceso"] == p, "Kg/HH Sistema"] = ratios_sistema.get(p, RATIO_FALLBACK_DEFAULT.get(p, 100.0))
 
         edited_prod_df = st.data_editor(
             st.session_state.df_prod_ratios,
             column_config={
                 "Proceso": st.column_config.TextColumn("Proceso", disabled=True),
                 "Kg/HH Sistema": st.column_config.NumberColumn("Sistema", disabled=True, format="%.1f"),
-                "Kg/HH Simulado": st.column_config.NumberColumn("Simulado", min_value=1.0, max_value=2500.0, step=5.0, format="%.1f")
+                "Kg/HH Simulado": st.column_config.NumberColumn("Simulado", min_value=1.0, max_value=10000.0, step=5.0, format="%.1f")
             },
             hide_index=True,
             key="editor_sidebar_ratios"
@@ -516,8 +537,9 @@ try:
         st.session_state.df_prod_ratios = edited_prod_df
         ratios_activos = dict(zip(edited_prod_df["Proceso"], edited_prod_df["Kg/HH Simulado"]))
 
-    with st.sidebar.expander("🔍 Columnas de Kilos Vinculadas", expanded=False):
+    with st.sidebar.expander("🔍 Columnas Vinculadas", expanded=False):
         st.write(f"**Kilos Programados:** `{col_kg_prog}`")
+        st.write(f"**Fecha Embalaje:** `{col_fecha_embalaje}`")
         st.write(f"**Ingeniería:** `{col_kg_ing}`")
         st.write(f"**CNCL:** `{col_kg_cncl}`")
         st.write(f"**DoblezL:** `{col_kg_doblez}`")
@@ -546,6 +568,11 @@ try:
     df_backlog_activo = df_backlog_activo.dropna(subset=["Fecha_DT"]).sort_values("Fecha_DT")
     df_backlog_activo["Mes_Entrega"] = df_backlog_activo["Fecha_DT"].dt.strftime("%Y-%m")
     df_backlog_activo["Kg_Prog_Num"] = df_backlog_activo[col_kg_prog].apply(limpiar_numero) if col_kg_prog else 0.0
+    
+    if col_fecha_embalaje:
+        df_backlog_activo["Fecha_Embalaje_DT"] = pd.to_datetime(df_backlog_activo[col_fecha_embalaje], errors='coerce', dayfirst=True)
+    else:
+        df_backlog_activo["Fecha_Embalaje_DT"] = pd.NaT
 
     if col_proyecto:
         df_backlog_activo["Proyecto_Codigo"] = df_backlog_activo[col_proyecto].fillna("").astype(str).str.strip()
@@ -578,140 +605,337 @@ try:
     df_backlog_horizonte = df_backlog_activo[df_backlog_activo["Mes_Entrega"] >= mes_seleccionado].copy()
 
     # -------------------------------------------------------------
-    # 4. CAPACIDADES DIARIAS Y RUTA CRÍTICA
+    # 4. CAPACIDADES DIARIAS (CON REFLEJO DINÁMICO DE DOTACIÓN EDITADA)
     # -------------------------------------------------------------
+    dotacion_efectiva = {}
+    for proc in PROCESOS_LINEA:
+        if (
+            "matriz_dotacion_semanal" in st.session_state
+            and st.session_state.get("dotacion_version_key") == DOTACION_VERSION
+        ):
+            df_mat = st.session_state.matriz_dotacion_semanal
+            fila_p = df_mat[df_mat["Proceso"] == proc]
+            cols_sem_mat = [c for c in df_mat.columns if c != "Proceso"]
+            if not fila_p.empty and cols_sem_mat:
+                val_prom = pd.to_numeric(fila_p[cols_sem_mat].iloc[0], errors='coerce').mean()
+                dotacion_efectiva[proc] = float(val_prom) if pd.notna(val_prom) and val_prom > 0 else float(DOTACION_BASE_DEFAULT.get(proc, 4))
+            else:
+                dotacion_efectiva[proc] = float(DOTACION_BASE_DEFAULT.get(proc, 4))
+        else:
+            dotacion_efectiva[proc] = float(DOTACION_BASE_DEFAULT.get(proc, 4))
+
     capacidad_diaria_kg = {}
     capacidad_semanal_kg = {}
     for proc in PROCESOS_LINEA:
-        oper = DOTACION_BASE_DEFAULT.get(proc, 4)
-        ratio = ratios_activos.get(proc, 80.0)
+        oper = dotacion_efectiva[proc]
+        ratio = ratios_activos.get(proc, RATIO_FALLBACK_DEFAULT.get(proc, 100.0))
         hh_dia = (oper * horas_sem / 5.5) * eficiencia
         capacidad_diaria_kg[proc] = max(100.0, hh_dia * ratio)
         capacidad_semanal_kg[proc] = capacidad_diaria_kg[proc] * 5.5
 
+    # -------------------------------------------------------------
+    # 5. SECUENCIACIÓN EDD (EARLIEST DUE DATE + PRIORIDAD POR RUTA)
+    # -------------------------------------------------------------
+    lotes_preparados = []
+    for _, lote in df_backlog_horizonte.iterrows():
+        kg_ing = limpiar_numero(lote.get(col_kg_ing)) if col_kg_ing else 0.0
+        kg_cncl = limpiar_numero(lote.get(col_kg_cncl)) if col_kg_cncl else 0.0
+        kg_doblez = limpiar_numero(lote.get(col_kg_doblez)) if col_kg_doblez else 0.0
+        kg_sold = limpiar_numero(lote.get(col_kg_sold)) if col_kg_sold else 0.0
+        kg_fab = limpiar_numero(lote.get(col_kg_fab)) if col_kg_fab else 0.0
+        kg_galv = limpiar_numero(lote.get(col_kg_galv)) if col_kg_galv else 0.0
+        kg_emb = limpiar_numero(lote.get(col_kg_emb)) if col_kg_emb else 0.0
+        kg_lote = float(lote["Kg_Prog_Num"])
+        kg_orden_lote = limpiar_numero(lote.get(col_orden)) if col_orden else kg_lote
+
+        procesos_activos_lote = [
+            p_nom for p_nom, val in [
+                ("Ingeniería", kg_ing),
+                ("CNCL", kg_cncl),
+                ("DoblezL", kg_doblez),
+                ("Soldadura", kg_sold),
+                ("Fabricado", kg_fab),
+                ("Galvanizado", kg_galv),
+                ("Embalaje", kg_emb),
+            ] if val > 0.0
+        ]
+        cant_procesos = len(procesos_activos_lote)
+        ruta_str = " → ".join(procesos_activos_lote) if procesos_activos_lote else "Completado / Embalado"
+
+        lotes_preparados.append({
+            "id_despacho": str(lote[col_id_fila]),
+            "subp": str(lote[col_sub_backlog]),
+            "f_prog": lote["Fecha_DT"],
+            "f_emb_dt": lote["Fecha_Embalaje_DT"],
+            "proy_display": str(lote["Proyecto_Display"]),
+            "proy_nombre": str(lote["Proyecto_Nombre"]),
+            "kg_lote": kg_lote,
+            "kg_orden": kg_orden_lote,
+            "kg_ing": kg_ing,
+            "kg_cncl": kg_cncl,
+            "kg_doblez": kg_doblez,
+            "kg_sold": kg_sold,
+            "kg_fab": kg_fab,
+            "kg_galv": kg_galv,
+            "kg_emb": kg_emb,
+            "cant_procesos": cant_procesos,
+            "ruta_str": ruta_str,
+        })
+
+    # Ordenamiento EDD estricto:
+    # 1° Fecha de entrega más próxima (f_prog ascendente)
+    # 2° Mayor cantidad de procesos pendientes (cant_procesos descendente: DoblezL/Soldadura tienen prioridad sobre flujo directo a Fabricado)
+    # 3° Subproyecto ascendente
+    lotes_preparados.sort(key=lambda x: (x["f_prog"], -x["cant_procesos"], x["subp"]))
+
     hoy = pd.Timestamp.now().normalize()
+    machine_cursor = {p: 0.0 for p in PROCESOS_LINEA}
+
     filas_tabla_despachos = []
     gantt_records_all = []
 
-    for _, lote in df_backlog_horizonte.iterrows():
-        id_despacho = str(lote[col_id_fila])
-        subp = str(lote[col_sub_backlog])
-        f_prog = lote["Fecha_DT"]
-        kg_lote = float(lote["Kg_Prog_Num"])
-        proy_display = str(lote["Proyecto_Display"])
-        proy_nombre = str(lote["Proyecto_Nombre"])
+    for idx_edd, item in enumerate(lotes_preparados, start=1):
+        id_despacho = item["id_despacho"]
+        subp = item["subp"]
+        f_prog = item["f_prog"]
+        f_emb_dt = item["f_emb_dt"]
+        proy_display = item["proy_display"]
+        proy_nombre = item["proy_nombre"]
+        kg_lote = item["kg_lote"]
+        kg_orden_lote = item["kg_orden"]
 
-        kg_por_cargar_ing = limpiar_numero(lote.get(col_kg_ing)) if col_kg_ing else 0.0
-        kg_cncl = limpiar_numero(lote.get(col_kg_cncl)) if col_kg_cncl else 0.0
-        kg_doblez = limpiar_numero(lote.get(col_kg_doblez)) if col_kg_doblez else 0.0
-        kg_soldadura = limpiar_numero(lote.get(col_kg_sold)) if col_kg_sold else 0.0
-        kg_fabricado = limpiar_numero(lote.get(col_kg_fab)) if col_kg_fab else 0.0
-        kg_galvanizado = limpiar_numero(lote.get(col_kg_galv)) if col_kg_galv else 0.0
-        kg_embalaje = limpiar_numero(lote.get(col_kg_emb)) if col_kg_emb else 0.0
-        kg_orden_lote = limpiar_numero(lote.get(col_orden)) if col_orden else kg_lote
+        kg_por_cargar_ing = item["kg_ing"]
+        kg_cncl = item["kg_cncl"]
+        kg_doblez = item["kg_doblez"]
+        kg_soldadura = item["kg_sold"]
+        kg_fabricado = item["kg_fab"]
+        kg_galvanizado = item["kg_galv"]
+        kg_embalaje = item["kg_emb"]
+        cant_procesos = item["cant_procesos"]
+        ruta_tooltip = f"Secuencia EDD #{idx_edd} | Procesos activos ({cant_procesos}): {item['ruta_str']}"
 
-        d_ing = kg_por_cargar_ing / capacidad_diaria_kg["Ingeniería"]
-        d_cncl = kg_cncl / capacidad_diaria_kg["CNCL"]
-        d_doblez = kg_doblez / capacidad_diaria_kg["DoblezL"]
-        d_sold = kg_soldadura / capacidad_diaria_kg["Soldadura"]
-        d_fab = kg_fabricado / capacidad_diaria_kg["Fabricado"]
-        d_galv = kg_galvanizado / capacidad_diaria_kg["Galvanizado"]
-        d_emb = kg_embalaje / capacidad_diaria_kg["Embalaje"]
+        # REGLA 2: SI KILOS POR EMBALAR < 10 Y EXISTE FECHA EMBALAJE EN PROGRAMA DESPACHO
+        embalado_finalizado = (kg_embalaje < 10.0 and pd.notna(f_emb_dt))
 
-        # TRASLAPES Y REGLAS DE FIN
-        t_ing_start = 0.0
-        t_ing_end = d_ing
-
-        t_cncl_start = t_ing_start + 0.50 * d_ing
-        t_cncl_end = t_cncl_start + d_cncl
-
-        t_doblez_start = t_cncl_start + 0.30 * d_cncl
-        t_doblez_end = t_doblez_start + d_doblez
-
-        t_sold_start = max(t_doblez_start + 0.25 * d_doblez, t_cncl_start + 0.50 * d_cncl)
-        t_sold_end = t_sold_start + d_sold
-
-        t_fab_start = t_sold_start + 0.50 * d_sold
-        t_fab_end = t_fab_start + d_fab
-
-        max_ante_fab = max(t_ing_end, t_cncl_end, t_doblez_end, t_sold_end)
-        if t_fab_end < max_ante_fab:
-            t_fab_end = max_ante_fab
-            if d_fab > 0:
-                t_fab_start = max(t_fab_start, t_fab_end - d_fab)
-
-        t_galv_start = max(t_fab_start + 0.50 * d_fab, t_sold_end) if d_fab > 0 else t_sold_end
-        t_galv_end = t_galv_start + d_galv
-
-        if t_galv_end < t_fab_end:
-            t_galv_end = t_fab_end
-            if d_galv > 0:
-                t_galv_start = max(t_galv_start, t_galv_end - d_galv)
-
-        t_emb_start = max(t_galv_start + 0.30 * d_galv, t_fab_end) if d_galv > 0 else t_galv_end
-        t_emb_end = t_emb_start + d_emb
-
-        if t_emb_end < t_galv_end:
-            t_emb_end = t_galv_end
-            if d_emb > 0:
-                t_emb_start = max(t_emb_start, t_emb_end - d_emb)
-
-        dias_habiles_totales = int(np.ceil(max(0.0, t_emb_end)))
-
-        if dias_habiles_totales == 0:
-            fecha_inicio_guia = f_prog
-            fecha_estimada_final = f_prog
-            desviacion_dias = 0
-            estado_desv = "🟢 Completado"
-            base_start = f_prog
-        else:
-            fecha_inicio_guia = f_prog - pd.offsets.BDay(dias_habiles_totales)
-
-            if fecha_inicio_guia < hoy:
-                fecha_estimada_final = hoy + pd.offsets.BDay(dias_habiles_totales)
-                desviacion_dias = (fecha_estimada_final - f_prog).days
-                estado_desv = f"🔴 Retraso (+{desviacion_dias}d)" if desviacion_dias > 0 else "🟡 Al Límite"
-                base_start = hoy
+        if embalado_finalizado:
+            fecha_estimada_final = f_emb_dt
+            desviacion_dias = max(0, (fecha_estimada_final - f_prog).days)
+            if desviacion_dias > 0:
+                estado_desv = f"🔴 Retraso (+{desviacion_dias}d)"
             else:
+                estado_desv = "🟢 Embalado (En Fecha)"
+            dias_habiles_totales = 0
+
+            for p_nombre, kg_val in [
+                ("Ingeniería", kg_por_cargar_ing),
+                ("CNCL", kg_cncl),
+                ("DoblezL", kg_doblez),
+                ("Soldadura", kg_soldadura),
+                ("Fabricado", kg_fabricado),
+                ("Galvanizado", kg_galvanizado),
+                ("Embalaje", kg_embalaje),
+            ]:
+                gantt_records_all.append({
+                    "Identificador de fila": id_despacho,
+                    "Subproyecto": subp,
+                    "Proyecto_Display": proy_display,
+                    "Proyecto_Nombre": proy_nombre,
+                    "Proceso": p_nombre,
+                    "Inicio": f_emb_dt,
+                    "Fin": f_emb_dt,
+                    "Fecha_Limite": f_prog,
+                    "Duracion": 0,
+                    "Kilos": kg_val,
+                    "Fuera_Plazo": (f_emb_dt > f_prog),
+                    "Dias_Desv_Proc": max(0, (f_emb_dt - f_prog).days),
+                    "Fecha_Fin_DT": f_emb_dt,
+                    "Ruta_Tooltip": ruta_tooltip
+                })
+        else:
+            d_ing = kg_por_cargar_ing / capacidad_diaria_kg["Ingeniería"]
+            d_cncl = kg_cncl / capacidad_diaria_kg["CNCL"]
+            d_doblez = kg_doblez / capacidad_diaria_kg["DoblezL"]
+            d_sold = kg_soldadura / capacidad_diaria_kg["Soldadura"]
+            d_fab = kg_fabricado / capacidad_diaria_kg["Fabricado"]
+            d_galv = kg_galvanizado / capacidad_diaria_kg["Galvanizado"]
+            d_emb = kg_embalaje / capacidad_diaria_kg["Embalaje"]
+
+            # ---------------------------------------------------------
+            # CICLO RELATIVO INTERNO CON RUTAS DINÁMICAS Y TRASLAPES
+            # ---------------------------------------------------------
+            t_ing_s = 0.0
+            t_ing_e = d_ing
+
+            t_cncl_s = 0.50 * d_ing
+            t_cncl_e = t_cncl_s + d_cncl
+
+            # DoblezL inicia cuando CNCL lleva 30% avance
+            t_dob_s = t_cncl_s + 0.30 * d_cncl
+            t_dob_e = t_dob_s + d_doblez
+
+            # Soldadura: si pasa por DoblezL espera 25% de DoblezL y 50% CNCL; si no, 30% CNCL
+            if d_doblez > 0:
+                t_sol_s = max(t_dob_s + 0.25 * d_doblez, t_cncl_s + 0.50 * d_cncl)
+            else:
+                t_sol_s = t_cncl_s + 0.30 * d_cncl
+            t_sol_e = t_sol_s + d_sold
+
+            # Fabricado: puede venir de Soldadura, de DoblezL o directo desde CNCL (50%)
+            if d_sold > 0:
+                t_fab_s = t_sol_s + 0.50 * d_sold
+            elif d_doblez > 0:
+                t_fab_s = t_dob_s + 0.50 * d_doblez
+            else:
+                t_fab_s = t_cncl_s + 0.50 * d_cncl
+            t_fab_e = max(t_fab_s + d_fab, t_ing_e, t_cncl_e, t_dob_e, t_sol_e)
+
+            # Galvanizado (Fabricado no puede sobrepasar fecha fin Galvanizado)
+            t_gal_s = max(t_fab_s + 0.50 * d_fab, t_sol_e) if d_fab > 0 else t_sol_e
+            t_gal_e = max(t_gal_s + d_galv, t_fab_e)
+
+            # Embalaje (Galvanizado no puede sobrepasar fecha fin Embalaje)
+            t_emb_s = max(t_gal_s + 0.30 * d_galv, t_fab_e) if d_galv > 0 else t_gal_e
+            t_emb_e = max(t_emb_s + d_emb, t_gal_e)
+
+            e_rel = {
+                "Ingeniería": t_ing_e,
+                "CNCL": t_cncl_e,
+                "DoblezL": t_dob_e,
+                "Soldadura": t_sol_e,
+                "Fabricado": t_fab_e,
+                "Galvanizado": t_gal_e,
+                "Embalaje": t_emb_e,
+            }
+
+            bdays_to_due = int(np.busday_count(hoy.date(), f_prog.date()))
+            ideal_base = max(0.0, float(bdays_to_due) - t_emb_e)
+
+            # ---------------------------------------------------------
+            # ASIGNACIÓN EN COLA DE CAPACIDAD EDD + BARRERAS
+            # ---------------------------------------------------------
+            s_act, e_act = {}, {}
+
+            # 1. Ingeniería
+            s_act["Ingeniería"] = max(ideal_base, machine_cursor["Ingeniería"]) if d_ing > 0 else ideal_base
+            e_act["Ingeniería"] = s_act["Ingeniería"] + d_ing
+            if d_ing > 0:
+                machine_cursor["Ingeniería"] = e_act["Ingeniería"]
+
+            # 2. CNCL
+            req_cncl = s_act["Ingeniería"] + 0.50 * d_ing
+            s_act["CNCL"] = max(req_cncl, machine_cursor["CNCL"]) if d_cncl > 0 else req_cncl
+            e_act["CNCL"] = s_act["CNCL"] + d_cncl
+            if d_cncl > 0:
+                machine_cursor["CNCL"] = e_act["CNCL"]
+
+            # 3. DoblezL (inicia cuando CNCL lleva 30% avance)
+            req_dob = s_act["CNCL"] + 0.30 * d_cncl
+            s_act["DoblezL"] = max(req_dob, machine_cursor["DoblezL"]) if d_doblez > 0 else req_dob
+            e_act["DoblezL"] = s_act["DoblezL"] + d_doblez
+            if d_doblez > 0:
+                machine_cursor["DoblezL"] = e_act["DoblezL"]
+
+            # 4. Soldadura
+            if d_doblez > 0:
+                req_sol = max(s_act["DoblezL"] + 0.25 * d_doblez, s_act["CNCL"] + 0.50 * d_cncl)
+            else:
+                req_sol = s_act["CNCL"] + 0.30 * d_cncl
+            s_act["Soldadura"] = max(req_sol, machine_cursor["Soldadura"]) if d_sold > 0 else req_sol
+            e_act["Soldadura"] = s_act["Soldadura"] + d_sold
+            if d_sold > 0:
+                machine_cursor["Soldadura"] = e_act["Soldadura"]
+
+            # 5. Fabricado (Regla 4: ningún proceso previo sobrepasa fin de Fabricado)
+            if d_sold > 0:
+                req_fab = s_act["Soldadura"] + 0.50 * d_sold
+            elif d_doblez > 0:
+                req_fab = s_act["DoblezL"] + 0.50 * d_doblez
+            else:
+                req_fab = s_act["CNCL"] + 0.50 * d_cncl
+            s_act["Fabricado"] = max(req_fab, machine_cursor["Fabricado"]) if d_fab > 0 else req_fab
+            e_act["Fabricado"] = max(
+                s_act["Fabricado"] + d_fab,
+                e_act["Ingeniería"], e_act["CNCL"], e_act["DoblezL"], e_act["Soldadura"]
+            )
+            if d_fab > 0:
+                s_act["Fabricado"] = max(s_act["Fabricado"], e_act["Fabricado"] - d_fab)
+                machine_cursor["Fabricado"] = e_act["Fabricado"]
+
+            # 6. Galvanizado (Regla 5: Fabricado no sobrepasa fin de Galvanizado)
+            req_gal = max(s_act["Fabricado"] + 0.50 * d_fab, e_act["Soldadura"]) if d_fab > 0 else e_act["Soldadura"]
+            s_act["Galvanizado"] = max(req_gal, machine_cursor["Galvanizado"]) if d_galv > 0 else req_gal
+            e_act["Galvanizado"] = max(s_act["Galvanizado"] + d_galv, e_act["Fabricado"])
+            if d_galv > 0:
+                s_act["Galvanizado"] = max(s_act["Galvanizado"], e_act["Galvanizado"] - d_galv)
+                machine_cursor["Galvanizado"] = e_act["Galvanizado"]
+
+            # 7. Embalaje (Regla 6: Galvanizado no sobrepasa fin de Embalaje)
+            req_emb = max(s_act["Galvanizado"] + 0.30 * d_galv, e_act["Fabricado"]) if d_galv > 0 else e_act["Fabricado"]
+            s_act["Embalaje"] = max(req_emb, machine_cursor["Embalaje"]) if d_emb > 0 else req_emb
+            e_act["Embalaje"] = max(s_act["Embalaje"] + d_emb, e_act["Galvanizado"])
+            if d_emb > 0:
+                s_act["Embalaje"] = max(s_act["Embalaje"], e_act["Embalaje"] - d_emb)
+                machine_cursor["Embalaje"] = e_act["Embalaje"]
+
+            dias_habiles_totales = int(np.ceil(max(0.0, e_act["Embalaje"])))
+
+            if dias_habiles_totales == 0:
                 fecha_estimada_final = f_prog
-                holgura = (fecha_inicio_guia - hoy).days
                 desviacion_dias = 0
-                estado_desv = f"🟢 A Tiempo ({holgura}d holgura)"
-                base_start = fecha_inicio_guia
+                estado_desv = "🟢 Completado"
+            else:
+                fecha_estimada_final = hoy + pd.offsets.BDay(dias_habiles_totales)
+                if fecha_estimada_final <= f_prog:
+                    holgura = (f_prog - fecha_estimada_final).days
+                    fecha_estimada_final = f_prog
+                    desviacion_dias = 0
+                    estado_desv = f"🟢 A Tiempo ({holgura}d holgura)"
+                else:
+                    desviacion_dias = (fecha_estimada_final - f_prog).days
+                    estado_desv = f"🔴 Retraso (+{desviacion_dias}d)"
 
-        procs_lote = [
-            ("Ingeniería", t_ing_start, t_ing_end, kg_por_cargar_ing),
-            ("CNCL", t_cncl_start, t_cncl_end, kg_cncl),
-            ("DoblezL", t_doblez_start, t_doblez_end, kg_doblez),
-            ("Soldadura", t_sold_start, t_sold_end, kg_soldadura),
-            ("Fabricado", t_fab_start, t_fab_end, kg_fabricado),
-            ("Galvanizado", t_galv_start, t_galv_end, kg_galvanizado),
-            ("Embalaje", t_emb_start, t_emb_end, kg_embalaje),
-        ]
+            for p_nombre, kg_val in [
+                ("Ingeniería", kg_por_cargar_ing),
+                ("CNCL", kg_cncl),
+                ("DoblezL", kg_doblez),
+                ("Soldadura", kg_soldadura),
+                ("Fabricado", kg_fabricado),
+                ("Galvanizado", kg_galvanizado),
+                ("Embalaje", kg_embalaje),
+            ]:
+                s_off = s_act[p_nombre]
+                e_off = e_act[p_nombre]
+                dur_p = max(1, int(np.ceil(e_off - s_off))) if kg_val > 0 else 0
+                st_dt = hoy + pd.offsets.BDay(int(np.floor(s_off)))
+                en_dt = hoy + pd.offsets.BDay(max(1, int(np.ceil(e_off)))) if kg_val > 0 else st_dt
 
-        for p_nombre, s_off, e_off, kg_val in procs_lote:
-            dur_p = max(1, int(np.ceil(e_off - s_off))) if kg_val > 0 else 0
-            st_dt = base_start + pd.offsets.BDay(int(np.floor(s_off)))
-            en_dt = st_dt + pd.offsets.BDay(dur_p) if dur_p > 0 else st_dt + pd.offsets.BDay(1)
-            
-            # Cálculo de plazo para este proceso respecto a la fecha final de despacho
-            dias_post = max(0, int(np.ceil(t_emb_end - e_off)))
-            f_limite_p = f_prog - pd.offsets.BDay(dias_post)
-            fuera_plazo_p = (en_dt > f_limite_p) if kg_val > 0 else False
-            
-            gantt_records_all.append({
-                "Identificador de fila": id_despacho,
-                "Subproyecto": subp,
-                "Proyecto_Display": proy_display,
-                "Proyecto_Nombre": proy_nombre,
-                "Proceso": p_nombre,
-                "Inicio": st_dt,
-                "Fin": en_dt,
-                "Duracion": dur_p,
-                "Kilos": kg_val,
-                "Fuera_Plazo": fuera_plazo_p,
-                "Fecha_Fin_DT": en_dt
-            })
+                # Fecha límite del proceso para llegar a tiempo a Fecha Despacho
+                rem_bdays = max(0, int(np.ceil(t_emb_e - e_rel[p_nombre])))
+                f_limite_p = f_prog - pd.offsets.BDay(rem_bdays)
+
+                if kg_val > 0 and en_dt > f_limite_p:
+                    fuera_plazo_p = True
+                    dias_desv_p = max(1, (en_dt - f_limite_p).days)
+                else:
+                    fuera_plazo_p = False
+                    dias_desv_p = 0
+
+                gantt_records_all.append({
+                    "Identificador de fila": id_despacho,
+                    "Subproyecto": subp,
+                    "Proyecto_Display": proy_display,
+                    "Proyecto_Nombre": proy_nombre,
+                    "Proceso": p_nombre,
+                    "Inicio": st_dt,
+                    "Fin": en_dt,
+                    "Fecha_Limite": f_limite_p,
+                    "Duracion": dur_p,
+                    "Kilos": kg_val,
+                    "Fuera_Plazo": fuera_plazo_p,
+                    "Dias_Desv_Proc": dias_desv_p,
+                    "Fecha_Fin_DT": en_dt,
+                    "Ruta_Tooltip": ruta_tooltip
+                })
 
         filas_tabla_despachos.append({
             "Identificador de fila": id_despacho,
@@ -728,6 +952,8 @@ try:
             "Kg por Embalar": kg_embalaje,
             "Kilos Programados": kg_lote,
             "Kg_Prog_Num": kg_lote,
+            "Cant_Procesos": cant_procesos,
+            "Ruta_Detalle": ruta_tooltip,
             "Fecha Programada": f_prog.strftime("%d/%m/%Y"),
             "Fecha Estimada Finalizar": fecha_estimada_final.strftime("%d/%m/%Y"),
             "Fecha_DT": f_prog,
@@ -741,7 +967,7 @@ try:
     df_gantt_total = pd.DataFrame(gantt_records_all)
 
     # -------------------------------------------------------------
-    # 5. ESTRUCTURA EN PESTAÑAS
+    # 6. ESTRUCTURA EN PESTAÑAS
     # -------------------------------------------------------------
     tab_despachos, tab_proceso = st.tabs([
         "📋 Control de Despachos & Carga Semanal",
@@ -785,7 +1011,8 @@ try:
         if solo_atrasados:
             df_mostrar = df_mostrar[df_mostrar["Desviacion_Dias"] > 0]
 
-        df_mostrar = df_mostrar.sort_values(by=["Fecha_DT", "Subproyecto"], ascending=[True, True])
+        # Orden EDD: Fecha más próxima ascendente -> Mayor cantidad de procesos descendente -> Subproyecto ascendente
+        df_mostrar = df_mostrar.sort_values(by=["Fecha_DT", "Cant_Procesos", "Subproyecto"], ascending=[True, False, True])
 
         total_lotes = len(df_mostrar)
         lotes_atrasados = len(df_mostrar[df_mostrar["Desviacion_Dias"] > 0])
@@ -816,7 +1043,7 @@ try:
 
         st.markdown("---")
         st.markdown("### 📊 Cuadro de Carga Semanal por Proceso")
-        st.caption("Distribución de kilos por semana para los 7 procesos clave. Los números en rojo indican semanas que superan la capacidad semanal disponible.")
+        st.caption("Secuenciado bajo algoritmo EDD (Earliest Due Date) priorizando lotes con mayor cantidad de procesos.")
 
         lotes_visibles = df_mostrar["Identificador de fila"].unique()
         df_gantt_filtrado = df_gantt_total[df_gantt_total["Identificador de fila"].isin(lotes_visibles)].copy()
@@ -898,7 +1125,7 @@ try:
     # -------------------------------------------------------------
     with tab_proceso:
         st.markdown("### ⚡ Carga Semanal por Despacho & Capacidad de Planta")
-        st.caption("Monitorea la carga lote por lote comparada con la capacidad semanal calculada según la dotación asignada.")
+        st.caption("Secuenciación EDD (fecha más próxima + prioridad a rutas con más procesos) y control de fechas estimadas por estación.")
 
         if st.session_state.get("dotacion_version_key") != DOTACION_VERSION:
             st.session_state.dotacion_version_key = DOTACION_VERSION
@@ -920,7 +1147,7 @@ try:
             )
 
         with st.expander("👷 Dotación Semanal de Operarios por Proceso (Editable)", expanded=False):
-            st.caption("Ajusta la cantidad de operarios por semana para actualizar la 'Capacidad Semanal Kg' que se muestra en la cabecera:")
+            st.caption("Ajusta la cantidad de operarios por semana para recalcular capacidades, días y fechas estimadas:")
             
             if proceso_seleccionado == "Programa Despacho":
                 df_dot_vista = st.session_state.matriz_dotacion_semanal[["Proceso"] + semanas_cols].copy()
@@ -949,7 +1176,7 @@ try:
 
         capacidad_dinamica_semanal = {p: {} for p in PROCESOS_LINEA}
         for p in PROCESOS_LINEA:
-            ratio_p = ratios_activos.get(p, 80.0)
+            ratio_p = ratios_activos.get(p, RATIO_FALLBACK_DEFAULT.get(p, 100.0))
             fila_oper = st.session_state.matriz_dotacion_semanal[st.session_state.matriz_dotacion_semanal["Proceso"] == p]
             for sem in semanas_cols:
                 oper_val = float(fila_oper[sem].values[0]) if not fila_oper.empty and sem in fila_oper.columns else DOTACION_BASE_DEFAULT.get(p, 4)
@@ -973,6 +1200,8 @@ try:
             subp = lote["Subproyecto"]
             f_dt_lote = lote["Fecha_DT"]
             f_despacho_str = lote["Fecha Programada"]
+            cant_procs_lote = int(lote.get("Cant_Procesos", 0))
+            ruta_tip = str(lote.get("Ruta_Detalle", ""))
 
             if proceso_seleccionado == "Programa Despacho":
                 kg_proc = limpiar_numero(lote.get("Kilos Programados", lote.get("Kg_Prog_Num", 0.0)))
@@ -985,9 +1214,10 @@ try:
                 semanas_dict = {sem: (kg_proc if sem == sem_lote else 0.0) for sem in semanas_cols}
 
                 f_est_dt = lote.get("Fecha_Fin_DT", f_dt_lote)
-                desv = lote.get("Desviacion_Dias", 0)
+                desv = int(lote.get("Desviacion_Dias", 0))
                 fuera_plazo = (desv > 0)
                 f_est_str = f_est_dt.strftime("%d/%m/%Y") if pd.notna(f_est_dt) else str(lote.get("Fecha Estimada Finalizar", "-"))
+                tooltip_alerta = f"Desviado +{desv} días respecto a Fecha Despacho"
             else:
                 mapa_col_kg = {
                     "Ingeniería": "Kg por cargar (Ing)",
@@ -1017,16 +1247,22 @@ try:
                     if isinstance(f_est_val, np.datetime64):
                         f_est_val = pd.Timestamp(f_est_val)
                     f_est_dt = f_est_val
-                    fuera_plazo = bool(rec_proc["Fuera_Plazo"].values[0]) if "Fuera_Plazo" in rec_proc.columns else False
+                    fuera_plazo = bool(rec_proc["Fuera_Plazo"].values[0])
+                    dias_desv_p = int(rec_proc["Dias_Desv_Proc"].values[0])
+                    f_lim_val = rec_proc["Fecha_Limite"].values[0]
+                    if isinstance(f_lim_val, np.datetime64):
+                        f_lim_val = pd.Timestamp(f_lim_val)
                     f_est_str = f_est_dt.strftime("%d/%m/%Y")
+                    tooltip_alerta = f"Proceso desviado +{dias_desv_p}d (Límite para cumplir despacho: {f_lim_val.strftime('%d/%m/%Y')})"
                 else:
                     f_est_dt = f_dt_lote
                     fuera_plazo = False
                     f_est_str = "-"
+                    tooltip_alerta = ""
 
-            # Indicador: muestra ⚠️ si está fuera de plazo para llegar a fecha despacho; si va bien no muestra nada
+            # Muestra indicador ⚠️ únicamente si está fuera de plazo; si va en fecha no muestra nada
             if fuera_plazo:
-                fecha_est_disp = f'{f_est_str} <span style="color:#dc2626; font-size:12px;" title="Fuera de plazo para llegar a fecha despacho">⚠️</span>'
+                fecha_est_disp = f'{f_est_str} <span style="color:#dc2626; font-size:12px; cursor:help;" title="{tooltip_alerta}">⚠️</span>'
             else:
                 fecha_est_disp = f_est_str
 
@@ -1035,6 +1271,8 @@ try:
                     "Identificador de fila": id_f,
                     "Subproyecto": subp,
                     "Fecha_DT": f_dt_lote,
+                    "Cant_Procesos": cant_procs_lote,
+                    "Ruta_Tooltip": ruta_tip,
                     "Fecha_Despacho": f_despacho_str,
                     "Fecha_Est_Display": fecha_est_disp,
                     "Cant_Dias": dias_p,
@@ -1050,7 +1288,11 @@ try:
         if df_lotes_tab2.empty:
             st.info(f"🎉 No hay lotes pendientes en **{proceso_seleccionado}** (Kilos ≤ 50 kg).")
         else:
-            df_lotes_tab2 = df_lotes_tab2.sort_values(by=["Fecha_DT", "Subproyecto"], ascending=[True, True])
+            # Secuenciación EDD: Fecha más próxima ascendente -> Mayor cantidad de procesos descendente -> Subproyecto ascendente
+            df_lotes_tab2 = df_lotes_tab2.sort_values(
+                by=["Fecha_DT", "Cant_Procesos", "Subproyecto"],
+                ascending=[True, False, True]
+            )
 
             html_tab2 = render_tabla_carga_proceso_html(
                 df_lotes_proc=df_lotes_tab2,
