@@ -54,7 +54,7 @@ RATIO_FALLBACK_DEFAULT = {
     "Embalaje": 350.0
 }
 
-DOTACION_VERSION = "v6_ui_unidades_fechas_edd"
+DOTACION_VERSION = "v7_sidebar_global_filters"
 
 # -------------------------------------------------------------
 # 1. CONEXIÓN A SMARTSHEET (DEFINICIÓN GLOBAL)
@@ -680,7 +680,6 @@ try:
     mes_seleccionado = st.sidebar.selectbox("Mostrar despachos desde:", options=meses_disponibles, index=indice_defecto)
     df_backlog_horizonte = df_backlog_activo[df_backlog_activo["Mes_Entrega"] >= mes_seleccionado].copy()
 
-    # Semana ISO de inicio del filtro aplicado (solo lectura)
     try:
         dt_inicio_filtro = pd.to_datetime(f"{mes_seleccionado}-01")
         semana_inicio_filtro_iso = f"{dt_inicio_filtro.isocalendar()[0]}-{dt_inicio_filtro.isocalendar()[1]:02d}"
@@ -1031,7 +1030,45 @@ try:
     df_gantt_total = pd.DataFrame(gantt_records_all)
 
     # -------------------------------------------------------------
-    # 6. ESTRUCTURA EN PESTAÑAS
+    # 6. FILTROS GLOBALES EN LA BARRA LATERAL IZQUIERDA (EN CASCADA)
+    # -------------------------------------------------------------
+    st.sidebar.markdown("---")
+    st.sidebar.header("🎯 Filtros Globales de Cartera")
+    st.sidebar.caption("Aplica simultáneamente a ambas pestañas:")
+
+    # 1. Año (F. Programada)
+    anios_disp = sorted(df_resultado["Fecha_DT"].dt.year.dropna().unique().astype(int).tolist())
+    filtro_anio = st.sidebar.multiselect("📅 Año (F. Programada):", anios_disp, placeholder="Todos los años", key="sb_anio")
+    df_p1 = df_resultado if not filtro_anio else df_resultado[df_resultado["Fecha_DT"].dt.year.isin(filtro_anio)]
+
+    # 2. Mes (F. Programada)
+    meses_disp = sorted(df_p1["Fecha_DT"].dt.strftime("%Y-%m").dropna().unique().tolist())
+    filtro_mes = st.sidebar.multiselect("📅 Mes (F. Programada):", meses_disp, placeholder="Todos los meses", key="sb_mes")
+    df_p2 = df_p1 if not filtro_mes else df_p1[df_p1["Fecha_DT"].dt.strftime("%Y-%m").isin(filtro_mes)]
+
+    # 3. Fecha Programada
+    fechas_dt_disp = sorted(df_p2["Fecha_DT"].dropna().unique())
+    fechas_str_disp = [pd.Timestamp(d).strftime("%d/%m/%Y") for d in fechas_dt_disp]
+    filtro_fecha = st.sidebar.multiselect("📅 Fecha Programada:", fechas_str_disp, placeholder="Todas las fechas", key="sb_fecha")
+    df_p3 = df_p2 if not filtro_fecha else df_p2[df_p2["Fecha_DT"].dt.strftime("%d/%m/%Y").isin(filtro_fecha)]
+
+    # 4. Nombre / Proyecto
+    proyectos_disp = sorted([p for p in df_p3["Proyecto_Display"].unique() if p.strip()])
+    filtro_proy = st.sidebar.multiselect("🏗️ Nombre / Proyecto:", proyectos_disp, placeholder="Todos los proyectos", key="sb_proy")
+    df_p4 = df_p3 if not filtro_proy else df_p3[df_p3["Proyecto_Display"].isin(filtro_proy)]
+
+    # 5. Subproyecto
+    subproyectos_disp = sorted([s for s in df_p4["Subproyecto"].unique() if s.strip()])
+    filtro_subp = st.sidebar.multiselect("📂 Subproyecto:", subproyectos_disp, placeholder="Todos los subproyectos", key="sb_subp")
+    df_p5 = df_p4 if not filtro_subp else df_p4[df_p4["Subproyecto"].isin(filtro_subp)]
+
+    # 6. ID Despacho
+    despachos_disp = sorted([d for d in df_p5["Identificador de fila"].unique() if d.strip()])
+    filtro_despacho = st.sidebar.multiselect("🆔 ID Despacho:", despachos_disp, placeholder="Todos los despachos", key="sb_desp")
+    df_filtrado_global = df_p5 if not filtro_despacho else df_p5[df_p5["Identificador de fila"].isin(filtro_despacho)]
+
+    # -------------------------------------------------------------
+    # 7. ESTRUCTURA EN PESTAÑAS
     # -------------------------------------------------------------
     tab_despachos, tab_proceso = st.tabs([
         "📋 Control de Despachos & Carga Semanal",
@@ -1042,62 +1079,13 @@ try:
     # TAB 1: CONTROL DE DESPACHOS & CUADRO SEMANAL
     # -------------------------------------------------------------
     with tab_despachos:
-        # Fila 1 de Filtros: Proyecto -> Subproyecto -> ID Despacho -> Solo con retraso
-        col_f1, col_f2, col_f3, col_f4 = st.columns([2, 2, 2, 1.2])
+        df_mostrar = df_filtrado_global.copy()
 
-        with col_f1:
-            proyectos_disponibles = sorted([p for p in df_resultado["Proyecto_Display"].unique() if p.strip()])
-            filtro_proy = st.multiselect("Filtrar por Nombre / Proyecto:", proyectos_disponibles, placeholder="Todos los proyectos", key="f_proy_t1")
-
-        df_sub_pool = df_resultado if not filtro_proy else df_resultado[df_resultado["Proyecto_Display"].isin(filtro_proy)]
-        subproyectos_disponibles = sorted([s for s in df_sub_pool["Subproyecto"].unique() if s.strip()])
-
-        with col_f2:
-            filtro_subp = st.multiselect("Filtrar por Subproyecto:", subproyectos_disponibles, placeholder="Todos los subproyectos", key="f_subp_t1")
-
-        df_disp_pool = df_sub_pool if not filtro_subp else df_sub_pool[df_sub_pool["Subproyecto"].isin(filtro_subp)]
-        despachos_disponibles = sorted([d for d in df_disp_pool["Identificador de fila"].unique() if d.strip()])
-
-        with col_f3:
-            filtro_despacho = st.multiselect("Filtrar por ID Despacho:", despachos_disponibles, placeholder="Todos los despachos", key="f_desp_t1")
-
-        with col_f4:
+        c1, c2, c3, c4, c5 = st.columns([1.2, 1.2, 1.2, 1.2, 1.2])
+        with c5:
             st.write("")
-            st.write("")
-            solo_atrasados = st.checkbox("Solo con retraso", key="f_atr_t1")
+            solo_atrasados = st.checkbox("🔴 Solo con retraso", key="f_atr_t1")
 
-        # Fila 2 de Filtros: Filtro Jerárquico de Fecha Programada (Año -> Mes -> Fecha)
-        df_fecha_pool_t1 = df_disp_pool if not filtro_despacho else df_disp_pool[df_disp_pool["Identificador de fila"].isin(filtro_despacho)]
-        col_d1, col_d2, col_d3, col_d4 = st.columns([1.5, 1.8, 2.2, 1.7])
-
-        with col_d1:
-            anios_t1 = sorted(df_fecha_pool_t1["Fecha_DT"].dt.year.dropna().unique().astype(int).tolist())
-            filtro_anio_t1 = st.multiselect("📅 Año (F. Programada):", anios_t1, placeholder="Todos los años", key="f_anio_t1")
-
-        pool_anio_t1 = df_fecha_pool_t1 if not filtro_anio_t1 else df_fecha_pool_t1[df_fecha_pool_t1["Fecha_DT"].dt.year.isin(filtro_anio_t1)]
-        with col_d2:
-            meses_t1 = sorted(pool_anio_t1["Fecha_DT"].dt.strftime("%Y-%m").dropna().unique().tolist())
-            filtro_mes_t1 = st.multiselect("📅 Mes (F. Programada):", meses_t1, placeholder="Todos los meses", key="f_mes_t1")
-
-        pool_mes_t1 = pool_anio_t1 if not filtro_mes_t1 else pool_anio_t1[pool_anio_t1["Fecha_DT"].dt.strftime("%Y-%m").isin(filtro_mes_t1)]
-        with col_d3:
-            fechas_dt_t1 = sorted(pool_mes_t1["Fecha_DT"].dropna().unique())
-            fechas_str_t1 = [pd.Timestamp(d).strftime("%d/%m/%Y") for d in fechas_dt_t1]
-            filtro_fecha_t1 = st.multiselect("📅 Fecha Programada:", fechas_str_t1, placeholder="Todas las fechas", key="f_fecha_t1")
-
-        df_mostrar = df_resultado.copy()
-        if filtro_proy:
-            df_mostrar = df_mostrar[df_mostrar["Proyecto_Display"].isin(filtro_proy)]
-        if filtro_subp:
-            df_mostrar = df_mostrar[df_mostrar["Subproyecto"].isin(filtro_subp)]
-        if filtro_despacho:
-            df_mostrar = df_mostrar[df_mostrar["Identificador de fila"].isin(filtro_despacho)]
-        if filtro_anio_t1:
-            df_mostrar = df_mostrar[df_mostrar["Fecha_DT"].dt.year.isin(filtro_anio_t1)]
-        if filtro_mes_t1:
-            df_mostrar = df_mostrar[df_mostrar["Fecha_DT"].dt.strftime("%Y-%m").isin(filtro_mes_t1)]
-        if filtro_fecha_t1:
-            df_mostrar = df_mostrar[df_mostrar["Fecha_DT"].dt.strftime("%d/%m/%Y").isin(filtro_fecha_t1)]
         if solo_atrasados:
             df_mostrar = df_mostrar[df_mostrar["Desviacion_Dias"] > 0]
 
@@ -1108,7 +1096,6 @@ try:
         lotes_ok = total_lotes - lotes_atrasados
         max_retraso = df_mostrar["Desviacion_Dias"].max() if not df_mostrar.empty else 0
 
-        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Lotes en Vista", total_lotes)
         c2.metric("Lotes en Fecha", lotes_ok)
         c3.metric("Lotes Desviados", lotes_atrasados, delta=f"-{lotes_atrasados}" if lotes_atrasados > 0 else "0", delta_color="inverse")
@@ -1231,7 +1218,7 @@ try:
 
         st.download_button(
             label="📥 Descargar Plan de Despachos (CSV)",
-            data=df_resultado.to_csv(index=False).encode('utf-8'),
+            data=df_mostrar.to_csv(index=False).encode('utf-8'),
             file_name=f"plan_despachos_estimados_{datetime.now().strftime('%Y%m%d')}.csv",
             mime="text/csv",
             key="dl_tab1"
@@ -1255,8 +1242,7 @@ try:
                 if sem not in st.session_state.matriz_dotacion_semanal.columns:
                     st.session_state.matriz_dotacion_semanal[sem] = [DOTACION_BASE_DEFAULT.get(p, 4) for p in PROCESOS_LINEA]
 
-        # Fila superior de filtros: Selector de Proceso + Filtro Jerárquico de Fecha Programada (Año -> Mes -> Fecha)
-        c_top1, c_top2, c_top3, c_top4 = st.columns([2.2, 1.3, 1.5, 2.0])
+        c_top1, _ = st.columns([2.5, 4.5])
         with c_top1:
             proceso_seleccionado = st.selectbox(
                 "🎯 Selecciona el Proceso a Analizar:",
@@ -1265,28 +1251,7 @@ try:
                 key="sel_proc_tab2"
             )
 
-        with c_top2:
-            anios_t2 = sorted(df_mostrar["Fecha_DT"].dt.year.dropna().unique().astype(int).tolist())
-            filtro_anio_t2 = st.multiselect("📅 Año (F. Prog):", anios_t2, placeholder="Todos", key="f_anio_t2")
-
-        pool_anio_t2 = df_mostrar if not filtro_anio_t2 else df_mostrar[df_mostrar["Fecha_DT"].dt.year.isin(filtro_anio_t2)]
-        with c_top3:
-            meses_t2 = sorted(pool_anio_t2["Fecha_DT"].dt.strftime("%Y-%m").dropna().unique().tolist())
-            filtro_mes_t2 = st.multiselect("📅 Mes (F. Prog):", meses_t2, placeholder="Todos", key="f_mes_t2")
-
-        pool_mes_t2 = pool_anio_t2 if not filtro_mes_t2 else pool_anio_t2[pool_anio_t2["Fecha_DT"].dt.strftime("%Y-%m").isin(filtro_mes_t2)]
-        with c_top4:
-            fechas_dt_t2 = sorted(pool_mes_t2["Fecha_DT"].dropna().unique())
-            fechas_str_t2 = [pd.Timestamp(d).strftime("%d/%m/%Y") for d in fechas_dt_t2]
-            filtro_fecha_t2 = st.multiselect("📅 Fecha Programada:", fechas_str_t2, placeholder="Todas", key="f_fecha_t2")
-
-        df_tab2_filtrado = df_mostrar.copy()
-        if filtro_anio_t2:
-            df_tab2_filtrado = df_tab2_filtrado[df_tab2_filtrado["Fecha_DT"].dt.year.isin(filtro_anio_t2)]
-        if filtro_mes_t2:
-            df_tab2_filtrado = df_tab2_filtrado[df_tab2_filtrado["Fecha_DT"].dt.strftime("%Y-%m").isin(filtro_mes_t2)]
-        if filtro_fecha_t2:
-            df_tab2_filtrado = df_tab2_filtrado[df_tab2_filtrado["Fecha_DT"].dt.strftime("%d/%m/%Y").isin(filtro_fecha_t2)]
+        df_tab2_filtrado = df_filtrado_global.copy()
 
         with st.expander("👷 Dotación Semanal de Operarios por Proceso (Editable)", expanded=False):
             st.caption("Ajusta la cantidad de operarios por semana para recalcular capacidades, días y fechas estimadas:")
