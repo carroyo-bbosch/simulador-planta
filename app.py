@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 st.set_page_config(page_title="Control de Despachos & Simulador de Carga", layout="wide")
-st.markdown("<style>[data-testid='stSidebar']>div:first-child{padding-top:.6rem}[data-testid='stSidebar'] .stVerticalBlock{gap:.38rem}</style>", unsafe_allow_html=True)
+st.markdown("<style>[data-testid='stSidebar']>div:first-child{padding-top:.55rem}[data-testid='stSidebar'] .stVerticalBlock{gap:.35rem}</style>", unsafe_allow_html=True)
 
 # -------------------------------------------------------------
 # 0. CONFIGURACIÓN BASE, OEE POR PROCESO Y CALENDARIO CHILE
@@ -19,7 +19,7 @@ PROCESOS = ["Ingeniería", "CNCL", "DoblezL", "Soldadura", "Fabricado", "Galvani
 DOTACION_DEF = {"Ingeniería": 8, "CNCL": 12, "DoblezL": 3, "Soldadura": 12, "Fabricado": 1, "Galvanizado": 1, "Embalaje": 8}
 RATIO_DEF = {"Ingeniería": 120.0, "CNCL": 120.0, "DoblezL": 100.0, "Soldadura": 60.0, "Fabricado": 1500.0, "Galvanizado": 2000.0, "Embalaje": 350.0}
 OEE_DEF = {"Ingeniería": 90.0, "CNCL": 45.0, "DoblezL": 90.0, "Soldadura": 90.0, "Fabricado": 90.0, "Galvanizado": 90.0, "Embalaje": 90.0}
-VERSION_KEY = "v14_fast_oee_proc_5915"
+VERSION_KEY = "v15_fix_galv_col_obj_fast"
 
 # Feriados nacionales de Chile (no regionales) 2025 - 2028
 FERIADOS_CL = {pd.Timestamp(d).normalize() for d in [
@@ -71,7 +71,7 @@ def _fetch_sheet(token, sid):
     h = cli.Sheets.get_sheet(int(sid))
     return pd.DataFrame([[c.value for c in f.cells] for f in h.rows], columns=[col.title.strip() for col in h.columns])
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def cargar_todas_las_hojas(token, id_back, id_prod, id_est):
     with ThreadPoolExecutor(max_workers=3) as ex:
         f1 = ex.submit(_fetch_sheet, token, id_back)
@@ -123,7 +123,7 @@ def sems_consecutivas(w_ini, w_fin, min_c=8):
     return res
 
 # -------------------------------------------------------------
-# 2. GENERADOR VECTORIAL PDF 1.4 ESTÁNDAR (COMPATIBILIDAD TOTAL)
+# 2. GENERADOR VECTORIAL PDF 1.4 ESTÁNDAR (SIN KEYERRORS)
 # -------------------------------------------------------------
 class VectorPDFBuilder:
     def __init__(self):
@@ -218,24 +218,26 @@ def crear_pdf_cotizacion(proy, cli, f_ini, f_fin, f_vacia, dias_h, dias_atr, tot
         pdf.cell(kx, pdf.y - 14, kw, 16, kv, align="C", size=8.2, bold=True, color=kcol, fill=kbg)
     pdf.y -= 38
 
+    # Sección 2: Desglose por Tipología (headers visuales separados de claves del DataFrame)
     pdf.ensure_space(60)
     pdf.text(M, pdf.y - 8, f"2. Desglose de Carga por Tipología de Estructura ({u_lbl})", size=10, bold=True, color="#0f172a")
     pdf.y -= 14
-    cols_e = ["Estructura", "% Ing", "% CNCL", "% Dob", "% Sol", "Cotizado", "Ingeniería", "CNCL", "DoblezL", "Soldadura", "Fabricado", "Galvaniz.", "Embalaje"]
+    headers_e = ["Estructura", "% Ing", "% CNCL", "% Dob", "% Sol", "Cotizado", "Ingeniería", "CNCL", "DoblezL", "Soldadura", "Fabricado", "Galvaniz.", "Embalaje"]
+    keys_e = ["Estructura", "% Ing", "% CNCL", "% Dob", "% Sol", "Cotizado", "Ingeniería", "CNCL", "DoblezL", "Soldadura", "Fabricado", "Galvanizado", "Embalaje"]
     w_e = [132, 34, 38, 34, 34, 66, 66, 66, 65, 65, 66, 66, 66]
     cx = M
-    for w, h in zip(w_e, cols_e):
+    for w, h in zip(w_e, headers_e):
         pdf.cell(cx, pdf.y, w, 17, h, align="L" if w > 100 else "C", size=7.2, bold=True, color="#ffffff", fill="#135b79", stroke="#0e3d54")
         cx += w
     pdf.y -= 17
 
     for ir, r in df_est.iterrows():
         pdf.ensure_space(16)
-        is_tot = str(r["Estructura"]).startswith("TOTAL")
+        is_tot = str(r.get("Estructura", "")).startswith("TOTAL")
         bg = "#f1f5f9" if is_tot else ("#ffffff" if ir % 2 == 0 else "#fafbfc")
         cx = M
-        for ic, (w, col) in enumerate(zip(w_e, cols_e)):
-            pdf.cell(cx, pdf.y, w, 15, str(r[col]), align="L" if ic == 0 else ("C" if 1 <= ic <= 4 else "R"), size=7.2, bold=is_tot, fill=bg)
+        for ic, (w, key_col) in enumerate(zip(w_e, keys_e)):
+            pdf.cell(cx, pdf.y, w, 15, str(r.get(key_col, "-")), align="L" if ic == 0 else ("C" if 1 <= ic <= 4 else "R"), size=7.2, bold=is_tot, fill=bg)
             cx += w
         pdf.y -= 15
 
@@ -285,7 +287,7 @@ def crear_pdf_cotizacion(proy, cli, f_ini, f_fin, f_vacia, dias_h, dias_atr, tot
         for _, rc in df_cuellos.head(8).iterrows():
             pdf.ensure_space(15)
             cx = M
-            for ic, (w, v) in enumerate(zip(w_c, [rc["Proceso"], rc["Semana"], rc[f"Planta ({u_lbl})"], rc[f"Cotiz. ({u_lbl})"], rc[f"Total ({u_lbl})"], rc[f"Cap. ({u_lbl})"], rc["Ocupación"]])):
+            for ic, (w, v) in enumerate(zip(w_c, [rc.get("Proceso","-"), rc.get("Semana","-"), rc.get(f"Planta ({u_lbl})","-"), rc.get(f"Cotiz. ({u_lbl})","-"), rc.get(f"Total ({u_lbl})","-"), rc.get(f"Cap. ({u_lbl})","-"), rc.get("Ocupación","-")])):
                 pdf.cell(cx, pdf.y, w, 14.5, str(v), align="L" if ic == 0 else ("C" if ic in [1, 6] else "R"), size=7.2, bold=(ic in [0, 6]), color="#991b1b" if ic == 6 else "#0f172a", fill="#fef2f2" if ic == 6 else "#ffffff")
                 cx += w
             pdf.y -= 14.5
@@ -306,7 +308,7 @@ def crear_pdf_cotizacion(proy, cli, f_ini, f_fin, f_vacia, dias_h, dias_atr, tot
             pdf.ensure_space(15)
             bg = "#ffffff" if ip % 2 == 0 else "#fafbfc"
             cx = M
-            for ic, (w, v) in enumerate(zip(w_p, [rp["Proyecto"], rp["Subproyecto"], rp["Procesos Críticos"], rp[f"Carga ({u_lbl})"], rp["Fin_Est"], rp["F. Prog"]])):
+            for ic, (w, v) in enumerate(zip(w_p, [rp.get("Proyecto","-"), rp.get("Subproyecto","-"), rp.get("Procesos Críticos","-"), rp.get(f"Carga ({u_lbl})","-"), rp.get("Fin_Est","-"), rp.get("F. Prog","-")])):
                 pdf.cell(cx, pdf.y, w, 14.5, str(v), align="L" if ic < 3 else ("R" if ic == 3 else "C"), size=7.2, bold=(ic == 0), fill=bg)
                 cx += w
             pdf.y -= 14.5
@@ -379,7 +381,23 @@ def render_horas_dotacion(sems, dot_sem, hrs_info):
     return html_box(css, tbl, 155)
 
 def render_carga_proceso(df_p, sems, cap_sem, f_u, fmt, u_lbl):
-    css = ".d0{position:sticky;left:0;width:96px;min-width:96px;max-width:96px;z-index:3}.d1{position:sticky;left:96px;width:82px;min-width:82px;max-width:82px;z-index:3}.d2{position:sticky;left:178px;width:72px;min-width:72px;max-width:72px;z-index:3}.d3{position:sticky;left:250px;width:82px;min-width:82px;max-width:82px;z-index:3}.d4{position:sticky;left:332px;width:44px;min-width:44px;max-width:44px;z-index:3}.d5{position:sticky;left:376px;width:74px;min-width:74px;max-width:74px;z-index:3}.r1 th{top:0;background:#f8fafc;color:#475569;font-weight:700;z-index:7}.r2 th{top:27px;background:#f1f5f9;color:#0f172a;font-weight:700;z-index:7}.r3 th{top:54px;background:#135b79;color:#fff;z-index:7}.r1 .fix,.r2 .d0,.r2 .d1,.r2 .d2,.r2 .d3,.r2 .d4,.r2 .d5,.r3 .d0,.r3 .d1,.r3 .d2,.r3 .d3,.r3 .d4,.r3 .d5{z-index:11}.r1 .fix{left:0;width:450px;min-width:450px}.r2 .d0,.r2 .d1,.r2 .d2,.r2 .d3,.r2 .d4,.r2 .d5{background:#f1f5f9}.r3 .d0,.r3 .d1,.r3 .d2,.r3 .d3,.r3 .d4,.r3 .d5{background:#135b79}"
+    # 7 columnas fijas compactas: ID Fila (90) + Subproy. (78) + Fecha Desp. (68) + Fecha Obj. Proc. (72) + Fecha Est. Entrega (78) + Cant. Días (42) + Kg/Ton Procesar (72) = 500px
+    css = """
+    .d0{position:sticky;left:0;width:90px;min-width:90px;max-width:90px;z-index:3;overflow:hidden;text-overflow:ellipsis}
+    .d1{position:sticky;left:90px;width:78px;min-width:78px;max-width:78px;z-index:3;overflow:hidden;text-overflow:ellipsis}
+    .d2{position:sticky;left:168px;width:68px;min-width:68px;max-width:68px;z-index:3}
+    .d3{position:sticky;left:236px;width:72px;min-width:72px;max-width:72px;z-index:3}
+    .d4{position:sticky;left:308px;width:78px;min-width:78px;max-width:78px;z-index:3}
+    .d5{position:sticky;left:386px;width:42px;min-width:42px;max-width:42px;z-index:3}
+    .d6{position:sticky;left:428px;width:72px;min-width:72px;max-width:72px;z-index:3}
+    .r1 th{top:0;background:#f8fafc;color:#475569;font-weight:700;z-index:7}
+    .r2 th{top:27px;background:#f1f5f9;color:#0f172a;font-weight:700;z-index:7}
+    .r3 th{top:54px;background:#135b79;color:#fff;z-index:7}
+    .r1 .fix,.r2 .d0,.r2 .d1,.r2 .d2,.r2 .d3,.r2 .d4,.r2 .d5,.r2 .d6,.r3 .d0,.r3 .d1,.r3 .d2,.r3 .d3,.r3 .d4,.r3 .d5,.r3 .d6{z-index:11}
+    .r1 .fix{left:0;width:500px;min-width:500px}
+    .r2 .d0,.r2 .d1,.r2 .d2,.r2 .d3,.r2 .d4,.r2 .d5,.r2 .d6{background:#f1f5f9}
+    .r3 .d0,.r3 .d1,.r3 .d2,.r3 .d3,.r3 .d4,.r3 .d5,.r3 .d6{background:#135b79}
+    """
     tot_d = int(df_p["Cant_Dias"].sum()) if not df_p.empty else 0
     tot_k = float(df_p["Kilos_Procesar"].sum()) if not df_p.empty else 0.0
     tot_s = {s: float(df_p[s].sum()) if (not df_p.empty and s in df_p.columns) else 0.0 for s in sems}
@@ -389,15 +407,31 @@ def render_carga_proceso(df_p, sems, cap_sem, f_u, fmt, u_lbl):
     for i, r in df_p.iterrows():
         bg, tip = ("#fff" if i % 2 == 0 else "#fafbfc"), r.get("Ruta_Tooltip", "")
         tds = [f"<td class='r ws'><span class='{'ov' if float(r.get(s,0))>cap_sem.get(s,0)>0 else ''}'>{fmt_u(r[s],f_u,fmt)}</span></td>" if float(r.get(s,0))>0 else "<td class='r ws dim'>-</td>" for s in sems]
-        rows.append(f"<tr class='row' style='background:{bg}'><td title='{tip}' class='l b d0' style='background:{bg}'>{r['Identificador de fila']}</td><td title='{tip}' class='l d1' style='background:{bg}'>{r['Subproyecto']}</td><td class='c d2' style='background:{bg}'>{r.get('Fecha_Despacho','-')}</td><td class='c d3' style='background:{bg}'>{r.get('Fecha_Est_Display','-')}</td><td class='r d4' style='background:{bg}'>{int(r['Cant_Dias'])}</td><td class='r b d5 cut' style='background:{bg}'>{fmt_u(r['Kilos_Procesar'],f_u,fmt)}</td>{''.join(tds)}</tr>")
+        rows.append(
+            f"<tr class='row' style='background:{bg}'>"
+            f"<td title='{tip}' class='l b d0' style='background:{bg}'>{r['Identificador de fila']}</td>"
+            f"<td title='{tip}' class='l d1' style='background:{bg}'>{r['Subproyecto']}</td>"
+            f"<td class='c d2' style='background:{bg}'>{r.get('Fecha_Despacho','-')}</td>"
+            f"<td class='c d3' style='background:{bg};color:#334155'>{r.get('Fecha_Obj_Proc','-')}</td>"
+            f"<td class='c d4' style='background:{bg}'>{r.get('Fecha_Est_Display','-')}</td>"
+            f"<td class='r d5' style='background:{bg}'>{int(r['Cant_Dias'])}</td>"
+            f"<td class='r b d6 cut' style='background:{bg}'>{fmt_u(r['Kilos_Procesar'],f_u,fmt)}</td>{''.join(tds)}</tr>"
+        )
     th_sems = ''.join(f"<th class='c ws'>{s}</th>" for s in sems)
-    tbl = f"<table><thead><tr class='r1'><th colspan='6' class='r fix cut'>Capacidad Semanal ({u_lbl}):</th>{th_caps}</tr><tr class='r2'><th class='l d0'>TOTAL PEND.</th><th class='l d1'>{len(df_p)} lotes</th><th class='c d2'>-</th><th class='c d3'>-</th><th class='r d4'>{tot_d}</th><th class='r d5 cut'>{fmt_u(tot_k,f_u,fmt)}</th>{''.join(th_tots)}</tr><tr class='r3'><th class='l d0'>ID Fila</th><th class='l d1'>Subproy.</th><th class='c d2'>Fecha<br>Desp.</th><th class='c d3'>Fecha Est.<br>Entrega</th><th class='c d4'>Cant.<br>Días</th><th class='r d5 cut'>{u_lbl} por<br>Procesar</th>{th_sems}</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+    tbl = f"""<table><thead>
+        <tr class='r1'><th colspan='7' class='r fix cut'>Capacidad Semanal ({u_lbl}):</th>{th_caps}</tr>
+        <tr class='r2'><th class='l d0'>TOTAL PEND.</th><th class='l d1'>{len(df_p)} lotes</th><th class='c d2'>-</th><th class='c d3'>-</th><th class='c d4'>-</th><th class='r d5'>{tot_d}</th><th class='r d6 cut'>{fmt_u(tot_k,f_u,fmt)}</th>{''.join(th_tots)}</tr>
+        <tr class='r3'><th class='l d0'>ID Fila</th><th class='l d1'>Subproy.</th><th class='c d2'>Fecha<br>Desp.</th><th class='c d3'>Fecha Obj.<br>Proceso</th><th class='c d4'>Fecha Est.<br>Entrega</th><th class='c d5'>Cant.<br>Días</th><th class='r d6 cut'>{u_lbl} por<br>Procesar</th>{th_sems}</tr>
+    </thead><tbody>{''.join(rows)}</tbody></table>"""
     return html_box(css, tbl, 530)
 
 # -------------------------------------------------------------
 # 4. MOTOR DE PROGRAMACIÓN EN COLA Y DISTRIBUCIÓN SEMANAL (CACHEADO)
 # -------------------------------------------------------------
+@st.cache_data(ttl=300, show_spinner=False)
 def dist_semanal_cl(df_g):
+    if df_g.empty:
+        return pd.DataFrame(columns=["Semana", "Proceso", "Identificador de fila", "Estructura", "Kilos"])
     rows = []
     for _, r in df_g.iterrows():
         if r["Kilos"] <= 0: continue
@@ -663,7 +697,7 @@ try:
     f_subp = st.sidebar.multiselect("📂 Subproyecto:", sorted([s for s in p5["Subproyecto"].unique() if s.strip()]), placeholder="Todos los subproyectos", key="sb_subp")
     df_mostrar = (p5 if not f_subp else p5[p5["Subproyecto"].isin(f_subp)]).copy()
 
-    # Semanas y capacidades compartidas (con OEE individual por proceso)
+    # Semanas y capacidades compartidas
     df_sem_all = dist_semanal_cl(df_gantt)
     if not df_sem_all.empty:
         df_sem_all = df_sem_all[df_sem_all["Semana"] >= sem_actual_iso].copy()
@@ -759,6 +793,7 @@ try:
                 s_dict = {s: (kg_p if s == sem_l else 0.0) for s in semanas_cols}
                 desv = int(lt.get("Desviacion_Dias", 0))
                 fp, f_est_s, tip_a = (desv > 0), lt["Fecha Estimada Finalizar"], f"Desviado +{desv}d"
+                f_obj_s = lt["Fecha Programada"]
             else:
                 kg_p = num_val(lt.get(mapa_kg.get(proc_sel, ""), 0.0))
                 dias_p = int(np.ceil(kg_p / cap_dia_kg[proc_sel])) if kg_p > 0 else 0
@@ -766,12 +801,19 @@ try:
                 s_dict = fl.groupby("Semana")["Kilos"].sum().to_dict() if not fl.empty else {}
                 rp = df_gf[(df_gf["Identificador de fila"] == id_f) & (df_gf["Proceso"] == proc_sel)] if not df_gf.empty else pd.DataFrame()
                 if not rp.empty:
-                    f_est_s, fp = pd.Timestamp(rp["Fin"].values[0]).strftime("%d/%m/%Y"), bool(rp["Fuera_Plazo"].values[0])
-                    tip_a = f"Desviado +{int(rp['Dias_Desv_Proc'].values[0])}d (Límite: {pd.Timestamp(rp['Fecha_Limite'].values[0]).strftime('%d/%m/%Y')})"
+                    f_est_s = pd.Timestamp(rp["Fin"].values[0]).strftime("%d/%m/%Y")
+                    f_obj_s = pd.Timestamp(rp["Fecha_Limite"].values[0]).strftime("%d/%m/%Y")
+                    fp = bool(rp["Fuera_Plazo"].values[0])
+                    tip_a = f"Desviado +{int(rp['Dias_Desv_Proc'].values[0])}d (Fecha Objetivo: {f_obj_s})"
                 else:
-                    f_est_s, fp, tip_a = "-", False, ""
+                    f_est_s, f_obj_s, fp, tip_a = "-", "-", False, ""
             if kg_p > 50.0:
-                lotes_t2.append({"Identificador de fila": id_f, "Subproyecto": lt["Subproyecto"], "Fecha_DT": f_dt, "Cant_Procesos": int(lt["Cant_Procesos"]), "Ruta_Tooltip": lt["Ruta_Detalle"], "Fecha_Despacho": lt["Fecha Programada"], "Fecha_Est_Display": f"{f_est_s} <span style='color:#dc2626;cursor:help' title='{tip_a}'>⚠️</span>" if fp else f_est_s, "Cant_Dias": dias_p, "Kilos_Procesar": kg_p, **{s: s_dict.get(s, 0.0) for s in semanas_cols}})
+                lotes_t2.append({
+                    "Identificador de fila": id_f, "Subproyecto": lt["Subproyecto"], "Fecha_DT": f_dt, "Cant_Procesos": int(lt["Cant_Procesos"]),
+                    "Ruta_Tooltip": lt["Ruta_Detalle"], "Fecha_Despacho": lt["Fecha Programada"], "Fecha_Obj_Proc": f_obj_s,
+                    "Fecha_Est_Display": f"{f_est_s} <span style='color:#dc2626;cursor:help' title='{tip_a}'>⚠️</span>" if fp else f_est_s,
+                    "Cant_Dias": dias_p, "Kilos_Procesar": kg_p, **{s: s_dict.get(s, 0.0) for s in semanas_cols}
+                })
 
         df_t2 = pd.DataFrame(lotes_t2)
         if df_t2.empty:
@@ -786,7 +828,6 @@ try:
     # PESTAÑA 2: SIMULADOR DE COTIZACIONES
     # =============================================================
     with tab_sim:
-        # Mapeo desde hoja ID 5915829825654660 ("Estimación Producción Programa Despacho")
         mapa_tip = {}
         if not df_tip_raw.empty:
             ct = df_tip_raw.columns.tolist()
@@ -802,7 +843,6 @@ try:
                 vd = pct_val(rt.get(c_pd)) if c_pd else 0.0
                 vs = pct_val(rt.get(c_ps)) if c_ps else 0.0
                 if nt not in mapa_tip:
-                    # Ingeniería, Fabricado, Galvanizado y Embalaje toman 100% de los kilos cotizados
                     mapa_tip[nt] = {"Ingeniería": 1.0, "CNCL": vc, "DoblezL": vd, "Soldadura": vs, "Fabricado": 1.0, "Galvanizado": 1.0, "Embalaje": 1.0}
                 else:
                     mapa_tip[nt]["CNCL"] = max(mapa_tip[nt]["CNCL"], vc)
@@ -940,13 +980,13 @@ try:
                     if kc <= 0: continue
                     ka, cs = piv_planta_all.get((p, s), 0.0), cap_sim[p].get(s, 0.0)
                     if cs > 0 and (ka + kc) > cs:
-                        cuellos.append({"Proceso": p, "Semana": s, f"Planta ({u_lbl})": fmt_u(ka, f_u, fmt_s), f"Cotiz. ({u_lbl})": fmt_u(kc, f_u, fmt_s), f"Total ({u_lbl})": fmt_u(ka+kc, f_u, fmt_s), f"Cap. ({u_lbl})": fmt_u(cs, f_u, fmt_s), "Ocupación": f"{((ka+kc)/cs)*100:.0f}%", "Total": fmt_u(ka+kc, f_u, fmt_s), "Capacidad": fmt_u(cs, f_u, fmt_s), "Ocupacion": f"{((ka+kc)/cs)*100:.0f}%"})
+                        cuellos.append({"Proceso": p, "Semana": s, f"Planta ({u_lbl})": fmt_u(ka, f_u, fmt_s), f"Cotiz. ({u_lbl})": fmt_u(kc, f_u, fmt_s), f"Total ({u_lbl})": fmt_u(ka+kc, f_u, fmt_s), f"Cap. ({u_lbl})": fmt_u(cs, f_u, fmt_s), "Ocupación": f"{((ka+kc)/cs)*100:.0f}%"})
             df_cuellos = pd.DataFrame(cuellos)
 
             with cd1:
                 st.markdown("#### 🚨 Procesos con Sobrecapacidad y Semanas Críticas")
                 if df_cuellos.empty: st.success("✅ Ningún proceso supera su capacidad semanal.")
-                else: st.dataframe(df_cuellos[["Proceso", "Semana", f"Planta ({u_lbl})", f"Cotiz. ({u_lbl})", f"Total ({u_lbl})", f"Cap. ({u_lbl})", "Ocupación"]], hide_index=True, use_container_width=True)
+                else: st.dataframe(df_cuellos, hide_index=True, use_container_width=True)
 
             p_crit = set(df_cuellos["Proceso"].unique()) if not df_cuellos.empty else {p for p in PROCESOS if cursor[p] > off_ini and df_ce[p].sum() > 0}
             imp_rows = []
@@ -955,15 +995,15 @@ try:
                 if not dgc.empty:
                     grp = dgc.groupby(["Proyecto_Display", "Subproyecto", "Identificador de fila", "Fecha_Prog_Str"], as_index=False).agg(Kilos_Oc=("Kilos", "sum"), Procs=("Proceso", lambda x: ", ".join(sorted(set(x)))), Fin_E=("Fin", "max")).sort_values("Kilos_Oc", ascending=False)
                     for _, rp in grp.head(12).iterrows():
-                        imp_rows.append({"Proyecto": rp["Proyecto_Display"], "Subproyecto": rp["Subproyecto"], "ID": rp["Identificador de fila"], "Procesos Críticos": rp["Procs"], f"Carga ({u_lbl})": fmt_u(rp["Kilos_Oc"], f_u, fmt_s), "Carga": fmt_u(rp["Kilos_Oc"], f_u, fmt_s), "Fin_Est": pd.Timestamp(rp["Fin_E"]).strftime("%d/%m/%Y"), "F. Prog": rp["Fecha_Prog_Str"]})
+                        imp_rows.append({"Proyecto": rp["Proyecto_Display"], "Subproyecto": rp["Subproyecto"], "Procesos Críticos": rp["Procs"], f"Carga ({u_lbl})": fmt_u(rp["Kilos_Oc"], f_u, fmt_s), "Fin_Est": pd.Timestamp(rp["Fin_E"]).strftime("%d/%m/%Y"), "F. Prog": rp["Fecha_Prog_Str"]})
             df_imp = pd.DataFrame(imp_rows)
 
             with cd2:
                 st.markdown("#### 🏗️ Proyectos Activos que Provocan el Retraso")
                 if df_imp.empty: st.success("✅ Ningún proyecto activo bloquea la ruta crítica.")
-                else: st.dataframe(df_imp[["Proyecto", "Subproyecto", "Procesos Críticos", f"Carga ({u_lbl})", "Fin_Est", "F. Prog"]], hide_index=True, use_container_width=True)
+                else: st.dataframe(df_imp, hide_index=True, use_container_width=True)
 
-            # Preparar datos PDF con el mismo formato visual del simulador
+            # Preparar datos PDF con claves exactas de PROCESOS (sin KeyError)
             df_est_pdf = pd.DataFrame({
                 "Estructura": df_ce["Etiqueta"].tolist() + ["TOTAL COTIZACIÓN"],
                 "% Ing": ["100%"] * len(df_ce) + ["100%"],
