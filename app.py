@@ -19,7 +19,7 @@ PROCESOS = ["Ingeniería", "CNCL", "DoblezL", "Soldadura", "Fabricado", "Galvani
 DOTACION_DEF = {"Ingeniería": 8, "CNCL": 12, "DoblezL": 3, "Soldadura": 12, "Fabricado": 1, "Galvanizado": 1, "Embalaje": 8}
 RATIO_DEF = {"Ingeniería": 120.0, "CNCL": 120.0, "DoblezL": 100.0, "Soldadura": 60.0, "Fabricado": 1500.0, "Galvanizado": 2000.0, "Embalaje": 350.0}
 OEE_DEF = {"Ingeniería": 90.0, "CNCL": 45.0, "DoblezL": 90.0, "Soldadura": 90.0, "Fabricado": 90.0, "Galvanizado": 90.0, "Embalaje": 90.0}
-VERSION_KEY = "v16_backward_gantt_free_windows"
+VERSION_KEY = "v17_asap_edd_queue_chile"
 
 # Feriados nacionales de Chile (no regionales) 2025 - 2028
 FERIADOS_CL = {pd.Timestamp(d).normalize() for d in [
@@ -222,7 +222,6 @@ def crear_pdf_cotizacion(proy, cli, f_ini_req, f_term_des, f_real_cola, dias_cic
         pdf.cell(kx, pdf.y - 14, kw, 16, kv, align="C", size=8.0, bold=True, color=kcol, fill=kbg)
     pdf.y -= 38
 
-    # Sección 2: Desglose por Tipología
     pdf.ensure_space(60)
     pdf.text(M, pdf.y - 8, f"2. Desglose de Carga por Tipología de Estructura ({u_lbl})", size=10, bold=True, color="#0f172a")
     pdf.y -= 14
@@ -246,7 +245,6 @@ def crear_pdf_cotizacion(proy, cli, f_ini_req, f_term_des, f_real_cola, dias_cic
         pdf.y -= 15
 
     pdf.y -= 10
-    # Sección 3: Carta Gantt Cotizada (solo semanas del rango)
     pdf.ensure_space(80)
     pdf.text(M, pdf.y - 8, f"3. Carta Gantt / Cuadro de Carga Semanal Cotizada ({u_lbl})", size=10, bold=True, color="#0f172a")
     pdf.y -= 14
@@ -274,7 +272,6 @@ def crear_pdf_cotizacion(proy, cli, f_ini_req, f_term_des, f_real_cola, dias_cic
         pdf.y -= 15
 
     pdf.y -= 10
-    # Sección 4: Diagnóstico de Sobrecapacidad y Ventanas Libres
     pdf.ensure_space(50)
     pdf.text(M, pdf.y - 8, "4. Diagnóstico de Sobrecapacidad y Ventanas Libres por Estación", size=10, bold=True, color="#0f172a")
     pdf.y -= 14
@@ -335,20 +332,22 @@ tr.row:hover td{background:#f1f5f9!important}
 .l{text-align:left}.r{text-align:right}.c{text-align:center}.b{font-weight:600;color:#0f172a}
 .b-red{background:#fee2e2;color:#991b1b;padding:2px 6px;border-radius:10px;font-weight:700;font-size:10px}
 .b-grn{background:#dcfce7;color:#166534;padding:2px 6px;border-radius:10px;font-weight:700;font-size:10px}
+.b-blu{background:#e0f2fe;color:#075985;padding:2px 6px;border-radius:10px;font-weight:700;font-size:10px}
 .ov{background:#fef2f2;color:#dc2626;font-weight:700;padding:1px 4px;border-radius:3px}
 .dim{color:#cbd5e1}.cut{border-right:2px solid #94a3b8!important}.ws{width:64px;min-width:64px}
 """
 html_box = lambda css, tbl, h: f"<!DOCTYPE html><html><head><meta charset='utf-8'><style>{CSS_BASE}.box{{max-height:{h}px}}{css}</style></head><body><div class='box'>{tbl}</div></body></html>"
 
 def render_tabla_despachos(df_m, tot, f_u, fmt, u_lbl):
-    css = ".c0{position:sticky;left:0;width:96px;min-width:96px;max-width:96px;z-index:3;overflow:hidden;text-overflow:ellipsis}.c1{position:sticky;left:96px;width:78px;min-width:78px;max-width:78px;z-index:3;overflow:hidden;text-overflow:ellipsis}.c2{position:sticky;left:174px;width:106px;min-width:106px;max-width:106px;z-index:3}thead .c0,thead .c1,thead .c2{z-index:10;background:#135b79}tfoot td{position:sticky;bottom:0;background:#f1f5f9;font-weight:700;color:#0f172a;border-top:2px solid #64748b;z-index:6}tfoot .c0,tfoot .c1,tfoot .c2{z-index:9;background:#f1f5f9}.wn{width:62px;min-width:62px}.wd{width:72px;min-width:72px}"
+    css = ".c0{position:sticky;left:0;width:96px;min-width:96px;max-width:96px;z-index:3;overflow:hidden;text-overflow:ellipsis}.c1{position:sticky;left:96px;width:78px;min-width:78px;max-width:78px;z-index:3;overflow:hidden;text-overflow:ellipsis}.c2{position:sticky;left:174px;width:110px;min-width:110px;max-width:110px;z-index:3}thead .c0,thead .c1,thead .c2{z-index:10;background:#135b79}tfoot td{position:sticky;bottom:0;background:#f1f5f9;font-weight:700;color:#0f172a;border-top:2px solid #64748b;z-index:6}tfoot .c0,tfoot .c1,tfoot .c2{z-index:9;background:#f1f5f9}.wn{width:62px;min-width:62px}.wd{width:72px;min-width:72px}"
     rows = []
     for i, r in df_m.iterrows():
         bg = "#fff" if i % 2 == 0 else "#fafbfc"
         diag, tip = str(r["Diagnostico"]), r.get("Ruta_Detalle", "")
-        badge = f"<span class='{'b-red' if 'Retraso' in diag else 'b-grn'}'>{diag}</span>"
+        b_cls = "b-red" if "Retraso" in diag else ("b-blu" if "Adelanto" in diag else "b-grn")
+        badge = f"<span class='{b_cls}'>{diag}</span>"
         ci = "color:#dc2626;font-weight:600" if r["Kg por cargar (Ing)"] > 0 else "color:#475569"
-        cf = "color:#dc2626;font-weight:700" if r["Desviacion_Dias"] > 0 else "color:#15803d;font-weight:700"
+        cf = "color:#dc2626;font-weight:700" if r["Desviacion_Dias"] > 0 else ("color:#0369a1;font-weight:700" if "Adelanto" in diag else "color:#15803d;font-weight:700")
         rows.append(
             f"<tr class='row' style='background:{bg}'><td title='{tip}' class='l b c0' style='background:{bg}'>{r['Identificador de fila']}</td><td title='{tip}' class='l c1' style='background:{bg}'>{r['Subproyecto']}</td><td class='c c2 cut' style='background:{bg}'>{badge}</td>"
             f"<td class='r wn'>{fmt_u(r['Kg Orden Proceder'],f_u,fmt)}</td><td class='r wn' style='{ci}'>{fmt_u(r['Kg por cargar (Ing)'],f_u,fmt)}</td>"
@@ -432,7 +431,7 @@ def render_carga_proceso(df_p, sems, cap_sem, f_u, fmt, u_lbl):
     return html_box(css, tbl, 530)
 
 # -------------------------------------------------------------
-# 4. MOTOR DE PROGRAMACIÓN EN COLA, RETROCESO Y VENTANAS LIBRES
+# 4. MOTOR DE PROGRAMACIÓN ASAP CON PRIORIZACIÓN EDD
 # -------------------------------------------------------------
 @st.cache_data(ttl=300, show_spinner=False)
 def dist_semanal_cl(df_g):
@@ -554,6 +553,10 @@ def calcular_rangos_sin_carga(df_g, hoy_ts, cap_sem_dict, f_u, fmt_s, u_lbl):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def ejecutar_edd_cartera(lotes_tuple, cap_dia_tuple, hoy_str):
+    """
+    Cola continua ASAP (min_off=0.0): cada estación procesa sin esperar la fecha de despacho,
+    usando la Fecha Programada exclusivamente como criterio de priorización (EDD).
+    """
     cap_dia_kg = dict(cap_dia_tuple)
     hoy = pd.Timestamp(hoy_str).normalize()
     cursor = {p: 0.0 for p in PROCESOS}
@@ -563,26 +566,34 @@ def ejecutar_edd_cartera(lotes_tuple, cap_dia_tuple, hoy_str):
         kgs = dict(it["kgs"])
         f_prog = pd.Timestamp(it["f_prog"])
         f_emb = pd.Timestamp(it["f_emb"]) if it["f_emb"] else pd.NaT
-        tip = f"EDD #{idx_edd} | Procesos ({it['n_proc']}): {it['ruta']}"
+        tip = f"Prioridad EDD #{idx_edd} | Procesos ({it['n_proc']}): {it['ruta']}"
 
         if kgs["Embalaje"] < 10.0 and pd.notna(f_emb):
             f_fin, desv, dias_tot = f_emb, max(0, (f_emb - f_prog).days), 0
-            diag = f"🔴 Retraso (+{desv}d)" if desv > 0 else "🟢 Embalado (OK)"
+            if desv > 0:
+                diag = f"🔴 Retraso (+{desv}d)"
+            else:
+                adel = contar_dias_cl(f_fin, f_prog)
+                diag = f"🔵 Adelanto (-{adel}d)" if adel > 0 else "🟢 Embalado (OK)"
             for p in PROCESOS:
                 gantt_all.append({"Identificador de fila": it["id"], "Subproyecto": it["subp"], "Proyecto_Display": it["proy"], "Fecha_Prog_Str": f_prog.strftime("%d/%m/%Y"), "Proceso": p, "Inicio": f_fin, "Fin": f_fin, "Fecha_Limite": f_prog, "Duracion": 0, "Kilos": kgs[p], "Fuera_Plazo": f_fin > f_prog, "Dias_Desv_Proc": desv, "Ruta_Tooltip": tip})
         else:
-            ideal = max(0.0, float(contar_dias_cl(hoy, f_prog)) - sum(kgs[p] / cap_dia_kg[p] for p in ["Fabricado","Galvanizado","Embalaje"]))
-            s_a, e_a, e_rel, t_emb_e, dias_tot, _ = programar_cola(kgs, cap_dia_kg, hoy, cursor, min_off=ideal)
+            s_a, e_a, e_rel, t_emb_e, dias_tot, _ = programar_cola(kgs, cap_dia_kg, hoy, cursor, min_off=0.0)
             if dias_tot == 0:
-                f_fin, desv, diag = f_prog, 0, "🟢 Completado"
+                f_fin, desv, diag = hoy, 0, "🟢 Completado"
             else:
                 f_fin = sumar_dias_cl(hoy, dias_tot)
-                if f_fin <= f_prog:
-                    holg = contar_dias_cl(f_fin, f_prog)
-                    f_fin, desv, diag = f_prog, 0, f"🟢 En Fecha ({holg}d)"
+                if f_fin < f_prog:
+                    adelanto_d = contar_dias_cl(f_fin, f_prog)
+                    desv = 0
+                    diag = f"🔵 Adelanto (-{adelanto_d}d)" if adelanto_d > 0 else "🟢 En Fecha (0d)"
+                elif f_fin == f_prog:
+                    desv = 0
+                    diag = "🟢 En Fecha (0d)"
                 else:
                     desv = (f_fin - f_prog).days
                     diag = f"🔴 Retraso (+{desv}d)"
+
             for p in PROCESOS:
                 dur_p = max(1, int(np.ceil(e_a[p] - s_a[p]))) if kgs[p] > 0 else 0
                 st_dt, en_dt = sumar_dias_cl(hoy, int(np.floor(s_a[p]))), (sumar_dias_cl(hoy, max(1, int(np.ceil(e_a[p])))) if kgs[p] > 0 else sumar_dias_cl(hoy, int(np.floor(s_a[p]))))
@@ -710,7 +721,7 @@ try:
     st.sidebar.caption(f"📍 **Sem. Actual:** `{sem_actual_iso}` | ▶️ **Inicio Filtro:** `{sem_ini_f}`")
 
     # -------------------------------------------------------------
-    # 6. CAPACIDADES CON OEE POR PROCESO Y SECUENCIACIÓN EDD (CACHEADA)
+    # 6. CAPACIDADES CON OEE POR PROCESO Y SECUENCIACIÓN ASAP + EDD
     # -------------------------------------------------------------
     dot_efec = {}
     for p in PROCESOS:
@@ -806,8 +817,10 @@ try:
         df_mostrar = df_mostrar.sort_values(by=["Fecha_DT", "Cant_Procesos", "Subproyecto"], ascending=[True, False, True])
 
         tot_l, atr_l = len(df_mostrar), len(df_mostrar[df_mostrar["Desviacion_Dias"] > 0])
+        adel_l = len(df_mostrar[df_mostrar["Diagnostico"].str.contains("Adelanto", na=False)])
         max_r = df_mostrar["Desviacion_Dias"].max() if not df_mostrar.empty else 0
-        c1.metric("Lotes en Vista", tot_l); c2.metric("Lotes en Fecha", tot_l - atr_l)
+        c1.metric("Lotes en Vista", tot_l)
+        c2.metric("En Fecha / Adelantados", tot_l - atr_l, delta=f"{adel_l} adelantados" if adel_l > 0 else None, delta_color="off")
         c3.metric("Lotes Desviados", atr_l, delta=f"-{atr_l}" if atr_l > 0 else "0", delta_color="inverse")
         c4.metric("Máximo Retraso", f"+{max_r} días" if max_r > 0 else "0 días", delta_color="inverse")
 
@@ -822,6 +835,7 @@ try:
 
         st.markdown("---")
         st.markdown(f"### 📋 Programa de Despachos & Estado de Carga por Estación ({unidad_medida})")
+        st.caption("Cola continua ASAP (sin retenes por fecha futura): los lotes entran tan pronto hay capacidad, priorizados por Fecha Programada más próxima.")
         tot_d1 = {k: df_mostrar[col].sum() for k, col in [("orden","Kg Orden Proceder"),("ing","Kg por cargar (Ing)"),("cncl","Kg por procesar CNCL"),("doblez","Kg por procesar DoblezL"),("sold","Kg por procesar Soldadura"),("fab","Kg por procesar Fabricado"),("galv","Kg por galvanizar"),("emb","Kg por Embalar")]}
         components.html(render_tabla_despachos(df_mostrar, tot_d1, f_u, fmt_s, u_lbl), height=520, scrolling=False)
 
@@ -926,7 +940,6 @@ try:
             st.caption("Ingresa la Fecha Término Deseado por el cliente (por defecto +60 días hábiles) para calcular fechas hacia atrás y evaluar disponibilidad de planta.")
         pdf_slot = ch2.empty()
 
-        # Fecha Término Deseado por defecto: +60 días hábiles desde hoy
         fecha_def_60d = sumar_dias_cl(hoy, 60).date()
         cs1, cs2, cs3 = st.columns([2.2, 2.0, 1.5])
         nom_cot = cs1.text_input("🏗️ Nombre Proyecto Cotizado:", value="Proyecto Cotización Nueva", key="sim_nom")
@@ -977,9 +990,6 @@ try:
             }])
             st.dataframe(pd.concat([df_sh, tot_r], ignore_index=True), hide_index=True, use_container_width=True)
 
-            # ---------------------------------------------------------
-            # CÁLCULO HACIA ATRÁS DESDE FECHA TÉRMINO DESEADO
-            # ---------------------------------------------------------
             target_off = float(contar_dias_cl(hoy, f_term_c))
             rel_cur = {p: 0.0 for p in PROCESOS}
             rel_items = []
@@ -1014,7 +1024,6 @@ try:
             f_ini_req_dt = pd.to_datetime(df_sg[df_sg["Kilos"] > 0]["Inicio"]).min() if not df_sg[df_sg["Kilos"] > 0].empty else hoy
             dias_ciclo_cot = int(np.ceil(total_span_dias))
 
-            # Simulación real hacia adelante (con cola actual de planta) para medir factibilidad
             start_real_off = max(0.0, backward_shift)
             cur_real = {p: max(start_real_off, cursor[p]) for p in PROCESOS}
             cur_vac = {p: start_real_off for p in PROCESOS}
@@ -1050,9 +1059,6 @@ try:
             k3.metric("🏭 Entrega Real c/ Carga Actual", max_fin_r.strftime("%d/%m/%Y"), delta="✅ Factible en plazo" if dias_desv_meta == 0 else f"🔴 +{dias_desv_meta} d. háb. desviación", delta_color="normal" if dias_desv_meta == 0 else "inverse")
             k4.metric("⚖️ Total Cotizado", f"{fmt_u(df_ce['Kg_Cotizado'].sum(), f_u, fmt_s)} {u_corto}")
 
-            # ---------------------------------------------------------
-            # 2️⃣ CARTA GANTT / CUADRO DE CARGA SEMANAL COTIZADA (SOLO SEMANAS DEL RANGO)
-            # ---------------------------------------------------------
             st.markdown("---")
             st.markdown(f"#### 2️⃣ Carta Gantt / Cuadro de Carga Semanal Cotizada ({unidad_medida})")
             cgf, _ = st.columns([2.5, 4.5])
@@ -1063,7 +1069,6 @@ try:
             piv_sv = df_sv_sem.groupby(["Proceso", "Semana"])["Kilos"].sum().to_dict() if not df_sv_sem.empty else {}
             piv_st = df_ssem.groupby(["Proceso", "Semana"])["Kilos"].sum().to_dict() if not df_ssem.empty else {}
 
-            # Mostrar solo las semanas comprendidas entre Inicio y Término calculado de la vista
             df_gv_act = df_gv[df_gv["Kilos"] > 0]
             if not df_gv_act.empty:
                 dt_min_g = pd.to_datetime(df_gv_act["Inicio"]).min()
@@ -1083,19 +1088,13 @@ try:
 
             components.html(render_cuadro_semanal(piv_sv, info_ps, sems_gantt_cot, cap_sim, f_u, fmt_s, u_lbl, h=350, h_ini_lbl="Inicio<br>Req.", h_fin_lbl="Término<br>Obj."), height=360, scrolling=False)
 
-            # ---------------------------------------------------------
-            # 3️⃣ RANGOS DE FECHAS SIN CARGA POR PROCESO (DISPONIBILIDAD)
-            # ---------------------------------------------------------
             st.markdown("---")
             st.markdown(f"#### 3️⃣ Disponibilidad de Planta: Rangos de Fechas sin Carga por Proceso ({unidad_medida})")
-            st.caption("Identifica los tramos de fechas libres en cada estación para ubicar estructuras sin generar retrasos:")
+            st.caption("Identifica los tramos de fechas libres en cada estación según la cola ASAP actual para ubicar estructuras sin generar retrasos:")
             cap_sem_ref = {p: cap_sim[p].get(sem_actual_iso, cap_dia_kg[p] * 5.0) for p in PROCESOS}
             df_libres = calcular_rangos_sin_carga(df_gantt, hoy, cap_sem_ref, f_u, fmt_s, u_lbl)
             st.dataframe(df_libres, hide_index=True, use_container_width=True)
 
-            # ---------------------------------------------------------
-            # 4️⃣ DIAGNÓSTICO DE SOBRECAPACIDAD Y PROYECTOS QUE RETRASAN
-            # ---------------------------------------------------------
             st.markdown("---")
             cd1, cd2 = st.columns(2)
             cuellos = []
@@ -1128,7 +1127,6 @@ try:
                 if df_imp.empty: st.success("✅ Ningún proyecto activo bloquea la ventana cotizada.")
                 else: st.dataframe(df_imp, hide_index=True, use_container_width=True)
 
-            # Generar y mostrar PDF en la cabecera superior
             df_est_pdf = pd.DataFrame({
                 "Estructura": df_ce["Etiqueta"].tolist() + ["TOTAL COTIZACIÓN"],
                 "% Ing": ["100%"] * len(df_ce) + ["100%"],
