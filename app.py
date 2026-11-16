@@ -19,7 +19,7 @@ PROCESOS = ["Ingeniería", "CNCL", "DoblezL", "Soldadura", "Fabricado", "Galvani
 DOTACION_DEF = {"Ingeniería": 8, "CNCL": 12, "DoblezL": 3, "Soldadura": 12, "Fabricado": 1, "Galvanizado": 1, "Embalaje": 8}
 RATIO_DEF = {"Ingeniería": 120.0, "CNCL": 120.0, "DoblezL": 100.0, "Soldadura": 60.0, "Fabricado": 1500.0, "Galvanizado": 2000.0, "Embalaje": 350.0}
 OEE_DEF = {"Ingeniería": 90.0, "CNCL": 45.0, "DoblezL": 90.0, "Soldadura": 90.0, "Fabricado": 90.0, "Galvanizado": 90.0, "Embalaje": 90.0}
-VERSION_KEY = "v15_fix_galv_col_obj_fast"
+VERSION_KEY = "v16_backward_gantt_free_windows"
 
 # Feriados nacionales de Chile (no regionales) 2025 - 2028
 FERIADOS_CL = {pd.Timestamp(d).normalize() for d in [
@@ -58,7 +58,10 @@ def sumar_dias_cl(base, n):
 
 def contar_dias_cl(f1, f2):
     d1, d2 = pd.Timestamp(f1).normalize(), pd.Timestamp(f2).normalize()
-    return 0 if d2 <= d1 else sum(1 for i in range(1, (d2 - d1).days + 1) if hrs_dia_cl(d1 + pd.Timedelta(days=i)) > 0)
+    if d2 == d1: return 0
+    if d2 > d1:
+        return sum(1 for i in range(1, (d2 - d1).days + 1) if hrs_dia_cl(d1 + pd.Timedelta(days=i)) > 0)
+    return -sum(1 for i in range(1, (d1 - d2).days + 1) if hrs_dia_cl(d2 + pd.Timedelta(days=i)) > 0)
 
 # -------------------------------------------------------------
 # 1. CONEXIÓN PARALELA A SMARTSHEET Y HELPERS
@@ -108,12 +111,12 @@ def pct_val(v):
 
 fmt_u = lambda kg, f, fmt: f"{float(kg) / f:{fmt}}"
 
-def sems_consecutivas(w_ini, w_fin, min_c=8):
+def sems_consecutivas(w_ini, w_fin, min_c=1):
     try:
         y1, wk1 = map(int, str(w_ini).split("-")); y2, wk2 = map(int, str(w_fin).split("-"))
         d1, d2 = pd.Timestamp.fromisocalendar(y1, wk1, 4), pd.Timestamp.fromisocalendar(y2, wk2, 4)
     except Exception:
-        d1 = pd.Timestamp.now().normalize(); d2 = d1 + pd.Timedelta(weeks=min_c)
+        d1 = pd.Timestamp.now().normalize(); d2 = d1 + pd.Timedelta(weeks=max(1, min_c))
     if d1 > d2: d2 = d1
     res, cur = [], d1
     while cur <= d2 or len(res) < min_c:
@@ -123,7 +126,7 @@ def sems_consecutivas(w_ini, w_fin, min_c=8):
     return res
 
 # -------------------------------------------------------------
-# 2. GENERADOR VECTORIAL PDF 1.4 ESTÁNDAR (SIN KEYERRORS)
+# 2. GENERADOR VECTORIAL PDF 1.4 ESTÁNDAR
 # -------------------------------------------------------------
 class VectorPDFBuilder:
     def __init__(self):
@@ -192,33 +195,34 @@ class VectorPDFBuilder:
         buf.extend(f"trailer << /Size {len(objs)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode("ascii"))
         return bytes(buf)
 
-def crear_pdf_cotizacion(proy, cli, f_ini, f_fin, f_vacia, dias_h, dias_atr, tot_cot_fmt, oee_cncl, oee_otros, u_lbl, df_est, df_gantt, sems, df_cuellos, df_imp):
+def crear_pdf_cotizacion(proy, cli, f_ini_req, f_term_des, f_real_cola, dias_ciclo, dias_desv, tot_cot_fmt, oee_cncl, oee_otros, u_lbl, df_est, df_gantt, sems, df_cuellos, df_imp, df_libres):
     pdf = VectorPDFBuilder()
     pdf.new_page()
     M, UW = pdf.margin, pdf.W - 2 * pdf.margin
 
     pdf.rect(0, pdf.H, pdf.W, 44, fill="#135b79")
-    pdf.text(M, pdf.H - 18, f"INFORME DE COTIZACIÓN Y CARGA DE PLANTA ({u_lbl.upper()})", size=13, bold=True, color="#ffffff")
+    pdf.text(M, pdf.H - 18, f"INFORME DE FACTIBILIDAD Y CARGA DE PLANTA - COTIZACIÓN ({u_lbl.upper()})", size=13, bold=True, color="#ffffff")
     pdf.text(M, pdf.H - 32, f"Emitido: {datetime.now().strftime('%d/%m/%Y %H:%M')}  |  Calendario Chile (40h/sem, sin feriados nac.)  |  OEE CNCL: {oee_cncl:.0f}% / Otros: {oee_otros:.0f}%", size=8.2, color="#e2e8f0")
     pdf.y = pdf.H - 54
 
     pdf.text(M, pdf.y - 8, f"1. Resumen de Cotización: {proy}   |   Cliente: {cli}", size=10, bold=True, color="#0f172a")
     pdf.y -= 15
+    es_factible = (dias_desv <= 0)
     kpis = [
-        ("Inicio Deseado", f_ini, "#f8fafc", "#0f172a"),
-        ("Fecha Estimada Entrega", f_fin, "#f0f9ff", "#135b79"),
-        ("Plazo Total Cotización", f"{dias_h} días hábiles", "#f8fafc", "#0f172a"),
-        ("Total Cotizado", f"{tot_cot_fmt} {u_lbl}", "#f8fafc", "#0f172a"),
-        ("Impacto Carga Actual", f"+{dias_atr} d. háb. (Vacía: {f_vacia})", "#fef2f2" if dias_atr > 0 else "#dcfce7", "#dc2626" if dias_atr > 0 else "#166534"),
+        ("Inicio Requerido (Hacia Atrás)", f_ini_req, "#f8fafc", "#0f172a"),
+        ("Fecha Término Deseado", f_term_des, "#f0f9ff", "#135b79"),
+        ("Entrega Real c/ Carga Planta", f_real_cola, "#dcfce7" if es_factible else "#fef2f2", "#166534" if es_factible else "#dc2626"),
+        ("Ciclo / Total Cotizado", f"{dias_ciclo}d háb. | {tot_cot_fmt} {u_lbl}", "#f8fafc", "#0f172a"),
+        ("Factibilidad en Plazo", "FACTIBLE EN FECHA" if es_factible else f"DESVIACIÓN +{dias_desv} DÍAS", "#dcfce7" if es_factible else "#fee2e2", "#166534" if es_factible else "#991b1b"),
     ]
     kw = UW / len(kpis)
     for ik, (kl, kv, kbg, kcol) in enumerate(kpis):
         kx = M + ik * kw
         pdf.cell(kx, pdf.y, kw, 14, kl, align="C", size=7.0, color="#475569", fill=kbg)
-        pdf.cell(kx, pdf.y - 14, kw, 16, kv, align="C", size=8.2, bold=True, color=kcol, fill=kbg)
+        pdf.cell(kx, pdf.y - 14, kw, 16, kv, align="C", size=8.0, bold=True, color=kcol, fill=kbg)
     pdf.y -= 38
 
-    # Sección 2: Desglose por Tipología (headers visuales separados de claves del DataFrame)
+    # Sección 2: Desglose por Tipología
     pdf.ensure_space(60)
     pdf.text(M, pdf.y - 8, f"2. Desglose de Carga por Tipología de Estructura ({u_lbl})", size=10, bold=True, color="#0f172a")
     pdf.y -= 14
@@ -242,14 +246,15 @@ def crear_pdf_cotizacion(proy, cli, f_ini, f_fin, f_vacia, dias_h, dias_atr, tot
         pdf.y -= 15
 
     pdf.y -= 10
+    # Sección 3: Carta Gantt Cotizada (solo semanas del rango)
     pdf.ensure_space(80)
     pdf.text(M, pdf.y - 8, f"3. Carta Gantt / Cuadro de Carga Semanal Cotizada ({u_lbl})", size=10, bold=True, color="#0f172a")
     pdf.y -= 14
-    sems_show = sems[:10]
+    sems_show = sems[:12]
     w_base = [84, 54, 54, 34, 56]
     w_sem = (UW - sum(w_base)) / max(1, len(sems_show))
     w_g = w_base + [w_sem] * len(sems_show)
-    h_g = ["Procesos", "Inicio Est.", "Término Est.", "Días", f"Total ({u_lbl})"] + sems_show
+    h_g = ["Procesos", "Inicio Req.", "Término Obj.", "Días", f"Total ({u_lbl})"] + sems_show
     cx = M
     for ic, (w, h) in enumerate(zip(w_g, h_g)):
         pdf.cell(cx, pdf.y, w, 17, h, align="L" if ic == 0 else "C", size=7.0, bold=True, color="#ffffff", fill="#135b79", stroke="#0e3d54")
@@ -269,12 +274,13 @@ def crear_pdf_cotizacion(proy, cli, f_ini, f_fin, f_vacia, dias_h, dias_atr, tot
         pdf.y -= 15
 
     pdf.y -= 10
+    # Sección 4: Diagnóstico de Sobrecapacidad y Ventanas Libres
     pdf.ensure_space(50)
-    pdf.text(M, pdf.y - 8, "4. Diagnóstico de Sobrecapacidad y Proyectos Activos que Provocan Retraso", size=10, bold=True, color="#0f172a")
+    pdf.text(M, pdf.y - 8, "4. Diagnóstico de Sobrecapacidad y Ventanas Libres por Estación", size=10, bold=True, color="#0f172a")
     pdf.y -= 14
 
     if df_cuellos.empty:
-        pdf.cell(M, pdf.y, UW, 16, "OK - Ningún proceso supera su capacidad semanal al incorporar esta cotización.", align="L", size=8.0, bold=True, color="#166534", fill="#dcfce7")
+        pdf.cell(M, pdf.y, UW, 16, "OK - Ningún proceso supera su capacidad semanal en la ventana cotizada.", align="L", size=8.0, bold=True, color="#166534", fill="#dcfce7")
         pdf.y -= 20
     else:
         w_c = [110, 75, 120, 120, 120, 120, UW - 665]
@@ -284,7 +290,7 @@ def crear_pdf_cotizacion(proy, cli, f_ini, f_fin, f_vacia, dias_h, dias_atr, tot
             pdf.cell(cx, pdf.y, w, 16, h, align="L" if ic == 0 else "C", size=7.2, bold=True, color="#ffffff", fill="#991b1b", stroke="#7f1d1d")
             cx += w
         pdf.y -= 16
-        for _, rc in df_cuellos.head(8).iterrows():
+        for _, rc in df_cuellos.head(6).iterrows():
             pdf.ensure_space(15)
             cx = M
             for ic, (w, v) in enumerate(zip(w_c, [rc.get("Proceso","-"), rc.get("Semana","-"), rc.get(f"Planta ({u_lbl})","-"), rc.get(f"Cotiz. ({u_lbl})","-"), rc.get(f"Total ({u_lbl})","-"), rc.get(f"Cap. ({u_lbl})","-"), rc.get("Ocupación","-")])):
@@ -293,25 +299,26 @@ def crear_pdf_cotizacion(proy, cli, f_ini, f_fin, f_vacia, dias_h, dias_atr, tot
             pdf.y -= 14.5
         pdf.y -= 8
 
-    if not df_imp.empty:
-        pdf.ensure_space(45)
-        pdf.text(M, pdf.y - 7, "Proyectos en cartera que ocupan capacidad en estaciones críticas antes de esta cotización:", size=8.5, bold=True, color="#334155")
+    if not df_libres.empty:
+        pdf.ensure_space(55)
+        pdf.text(M, pdf.y - 7, "Disponibilidad y Rangos de Fechas sin Carga por Estación:", size=8.5, bold=True, color="#334155")
         pdf.y -= 13
-        w_p = [230, 110, 175, 95, 95, UW - 705]
-        h_p = ["Proyecto", "Subproyecto", "Procesos Críticos", f"Carga ({u_lbl})", "Fin Est. Planta", "F. Desp. Prog"]
+        w_l = [95, 115, 85, 220, 180, UW - 695]
+        h_l = ["Proceso", "Estado", "Fin Últ. Carga", "Ventanas Intermedias Libres", "Disponible Continuo Desde", f"Cap. Sem ({u_lbl})"]
         cx = M
-        for ic, (w, h) in enumerate(zip(w_p, h_p)):
-            pdf.cell(cx, pdf.y, w, 16, h, align="L" if ic < 3 else "C", size=7.2, bold=True, color="#ffffff", fill="#135b79", stroke="#0e3d54")
+        for ic, (w, h) in enumerate(zip(w_l, h_l)):
+            pdf.cell(cx, pdf.y, w, 15, h, align="L" if ic in [0, 3, 4] else "C", size=7.0, bold=True, color="#ffffff", fill="#334155", stroke="#1e293b")
             cx += w
-        pdf.y -= 16
-        for ip, rp in df_imp.head(8).iterrows():
-            pdf.ensure_space(15)
-            bg = "#ffffff" if ip % 2 == 0 else "#fafbfc"
+        pdf.y -= 15
+        for il, rl in df_libres.iterrows():
+            pdf.ensure_space(14)
+            bg = "#ffffff" if il % 2 == 0 else "#fafbfc"
             cx = M
-            for ic, (w, v) in enumerate(zip(w_p, [rp.get("Proyecto","-"), rp.get("Subproyecto","-"), rp.get("Procesos Críticos","-"), rp.get(f"Carga ({u_lbl})","-"), rp.get("Fin_Est","-"), rp.get("F. Prog","-")])):
-                pdf.cell(cx, pdf.y, w, 14.5, str(v), align="L" if ic < 3 else ("R" if ic == 3 else "C"), size=7.2, bold=(ic == 0), fill=bg)
+            for ic, (w, col_l) in enumerate(zip(w_l, h_l)):
+                key_l = f"Cap. Semanal ({u_lbl})" if ic == 5 else col_l
+                pdf.cell(cx, pdf.y, w, 14, str(rl.get(key_l, "-")), align="L" if ic in [0, 3, 4] else ("R" if ic == 5 else "C"), size=7.0, bold=(ic == 0), fill=bg)
                 cx += w
-            pdf.y -= 14.5
+            pdf.y -= 14
 
     return pdf.build()
 
@@ -358,7 +365,7 @@ def render_tabla_despachos(df_m, tot, f_u, fmt, u_lbl):
         {''.join(f"<td class='r'>{fmt_u(tot[k],f_u,fmt)}</td>" for k in ['orden','ing','cncl','doblez','sold','fab','galv','emb'])}<td class='c'>-</td><td class='c'>-</td></tr></tfoot></table>"""
     return html_box(css, tbl, 510)
 
-def render_cuadro_semanal(piv, info_p, sems, cap_din, f_u, fmt, u_lbl, h=350):
+def render_cuadro_semanal(piv, info_p, sems, cap_din, f_u, fmt, u_lbl, h=350, h_ini_lbl="Inicio<br>Est.", h_fin_lbl="Término<br>Est."):
     css = ".p0{position:sticky;left:0;width:110px;min-width:110px;max-width:110px;z-index:3}.p1{position:sticky;left:110px;width:76px;min-width:76px;max-width:76px;z-index:3}.p2{position:sticky;left:186px;width:76px;min-width:76px;max-width:76px;z-index:3}.p3{position:sticky;left:262px;width:48px;min-width:48px;max-width:48px;z-index:3}.p4{position:sticky;left:310px;width:85px;min-width:85px;max-width:85px;z-index:3}thead .p0,thead .p1,thead .p2,thead .p3,thead .p4{z-index:10;background:#135b79}"
     rows = []
     for i, pk in enumerate(PROCESOS):
@@ -368,7 +375,7 @@ def render_cuadro_semanal(piv, info_p, sems, cap_din, f_u, fmt, u_lbl, h=350):
         tds = [f"<td class='r ws'><span class='{'ov' if float(inf.get('check_ov',{}).get(s,piv.get((pk,s),0)))>cap_din.get(pk,{}).get(s,9e9)>0 else ''}'>{fmt_u(piv[(pk,s)],f_u,fmt)}</span></td>" if piv.get((pk,s),0)>0 else "<td class='r ws dim'>-</td>" for s in sems]
         rows.append(f"<tr class='row' style='background:{bg}'><td class='l b p0' style='background:{bg}'>{i+1}. {pk}</td><td class='c p1' style='background:{bg}'>{inf.get('ini','-')}</td><td class='c p2' style='background:{bg}'>{inf.get('fin','-')}</td><td class='r p3' style='background:{bg}'>{int(inf.get('dias',0))}</td><td class='r b p4 cut' style='background:{bg}'>{fmt_u(tkg,f_u,fmt) if tkg>0 else '-'}</td>{''.join(tds)}</tr>")
     th_sems = ''.join(f"<th class='c ws'>{s}</th>" for s in sems)
-    tbl = f"<table><thead><tr><th class='l p0'>Procesos</th><th class='c p1'>Inicio<br>Est.</th><th class='c p2'>Término<br>Est.</th><th class='c p3'>Cant.<br>Días</th><th class='r p4 cut'>Total<br>({u_lbl})</th>{th_sems}</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+    tbl = f"<table><thead><tr><th class='l p0'>Procesos</th><th class='c p1'>{h_ini_lbl}</th><th class='c p2'>{h_fin_lbl}</th><th class='c p3'>Cant.<br>Días</th><th class='r p4 cut'>Total<br>({u_lbl})</th>{th_sems}</tr></thead><tbody>{''.join(rows)}</tbody></table>"
     return html_box(css, tbl, h)
 
 def render_horas_dotacion(sems, dot_sem, hrs_info):
@@ -381,7 +388,6 @@ def render_horas_dotacion(sems, dot_sem, hrs_info):
     return html_box(css, tbl, 155)
 
 def render_carga_proceso(df_p, sems, cap_sem, f_u, fmt, u_lbl):
-    # 7 columnas fijas compactas: ID Fila (90) + Subproy. (78) + Fecha Desp. (68) + Fecha Obj. Proc. (72) + Fecha Est. Entrega (78) + Cant. Días (42) + Kg/Ton Procesar (72) = 500px
     css = """
     .d0{position:sticky;left:0;width:90px;min-width:90px;max-width:90px;z-index:3;overflow:hidden;text-overflow:ellipsis}
     .d1{position:sticky;left:90px;width:78px;min-width:78px;max-width:78px;z-index:3;overflow:hidden;text-overflow:ellipsis}
@@ -426,7 +432,7 @@ def render_carga_proceso(df_p, sems, cap_sem, f_u, fmt, u_lbl):
     return html_box(css, tbl, 530)
 
 # -------------------------------------------------------------
-# 4. MOTOR DE PROGRAMACIÓN EN COLA Y DISTRIBUCIÓN SEMANAL (CACHEADO)
+# 4. MOTOR DE PROGRAMACIÓN EN COLA, RETROCESO Y VENTANAS LIBRES
 # -------------------------------------------------------------
 @st.cache_data(ttl=300, show_spinner=False)
 def dist_semanal_cl(df_g):
@@ -451,18 +457,27 @@ def dist_semanal_cl(df_g):
             rows.append({"Semana": wk, "Proceso": r["Proceso"], "Identificador de fila": r.get("Identificador de fila", ""), "Estructura": r.get("Estructura", ""), "Kilos": (hw / tot_h) * r["Kilos"]})
     return pd.DataFrame(rows)
 
+def ciclo_relativo_lote(kgs, cap_d):
+    d = {p: kgs.get(p, 0.0) / cap_d[p] for p in PROCESOS}
+    s_r, e_r = {}, {}
+    s_r["Ingeniería"] = 0.0; e_r["Ingeniería"] = d["Ingeniería"]
+    s_r["CNCL"] = 0.50 * d["Ingeniería"]; e_r["CNCL"] = s_r["CNCL"] + d["CNCL"]
+    s_r["DoblezL"] = s_r["CNCL"] + 0.30 * d["CNCL"]; e_r["DoblezL"] = s_r["DoblezL"] + d["DoblezL"]
+    s_r["Soldadura"] = max(s_r["DoblezL"] + 0.25 * d["DoblezL"], s_r["CNCL"] + 0.50 * d["CNCL"]) if d["DoblezL"] > 0 else s_r["CNCL"] + 0.30 * d["CNCL"]
+    e_r["Soldadura"] = s_r["Soldadura"] + d["Soldadura"]
+    s_r["Fabricado"] = (s_r["Soldadura"] + 0.50 * d["Soldadura"]) if d["Soldadura"] > 0 else ((s_r["DoblezL"] + 0.50 * d["DoblezL"]) if d["DoblezL"] > 0 else s_r["CNCL"] + 0.50 * d["CNCL"])
+    e_r["Fabricado"] = max(s_r["Fabricado"] + d["Fabricado"], e_r["Ingeniería"], e_r["CNCL"], e_r["DoblezL"], e_r["Soldadura"])
+    if d["Fabricado"] > 0: s_r["Fabricado"] = max(s_r["Fabricado"], e_r["Fabricado"] - d["Fabricado"])
+    s_r["Galvanizado"] = max(s_r["Fabricado"] + 0.50 * d["Fabricado"], e_r["Soldadura"]) if d["Fabricado"] > 0 else e_r["Soldadura"]
+    e_r["Galvanizado"] = max(s_r["Galvanizado"] + d["Galvanizado"], e_r["Fabricado"])
+    if d["Galvanizado"] > 0: s_r["Galvanizado"] = max(s_r["Galvanizado"], e_r["Galvanizado"] - d["Galvanizado"])
+    s_r["Embalaje"] = max(s_r["Galvanizado"] + 0.30 * d["Galvanizado"], e_r["Fabricado"]) if d["Galvanizado"] > 0 else e_r["Fabricado"]
+    e_r["Embalaje"] = max(s_r["Embalaje"] + d["Embalaje"], e_r["Galvanizado"])
+    if d["Embalaje"] > 0: s_r["Embalaje"] = max(s_r["Embalaje"], e_r["Embalaje"] - d["Embalaje"])
+    return s_r, e_r, e_r["Embalaje"]
+
 def programar_cola(kgs, cap_d, hoy_ts, cur_dict, min_off=0.0):
     d = {p: kgs.get(p, 0.0) / cap_d[p] for p in PROCESOS}
-    t_ing_e = d["Ingeniería"]
-    t_cncl_s = 0.50 * d["Ingeniería"]; t_cncl_e = t_cncl_s + d["CNCL"]
-    t_dob_s = t_cncl_s + 0.30 * d["CNCL"]; t_dob_e = t_dob_s + d["DoblezL"]
-    t_sol_s = max(t_dob_s + 0.25 * d["DoblezL"], t_cncl_s + 0.50 * d["CNCL"]) if d["DoblezL"] > 0 else t_cncl_s + 0.30 * d["CNCL"]; t_sol_e = t_sol_s + d["Soldadura"]
-    t_fab_s = (t_sol_s + 0.50 * d["Soldadura"]) if d["Soldadura"] > 0 else ((t_dob_s + 0.50 * d["DoblezL"]) if d["DoblezL"] > 0 else t_cncl_s + 0.50 * d["CNCL"])
-    t_fab_e = max(t_fab_s + d["Fabricado"], t_ing_e, t_cncl_e, t_dob_e, t_sol_e)
-    t_gal_s = max(t_fab_s + 0.50 * d["Fabricado"], t_sol_e) if d["Fabricado"] > 0 else t_sol_e; t_gal_e = max(t_gal_s + d["Galvanizado"], t_fab_e)
-    t_emb_s = max(t_gal_s + 0.30 * d["Galvanizado"], t_fab_e) if d["Galvanizado"] > 0 else t_gal_e; t_emb_e = max(t_emb_s + d["Embalaje"], t_gal_e)
-    e_rel = {"Ingeniería": t_ing_e, "CNCL": t_cncl_e, "DoblezL": t_dob_e, "Soldadura": t_sol_e, "Fabricado": t_fab_e, "Galvanizado": t_gal_e, "Embalaje": t_emb_e}
-
     s_a, e_a = {}, {}
     for p in PROCESOS:
         if p == "Ingeniería": req = min_off
@@ -482,8 +497,60 @@ def programar_cola(kgs, cap_d, hoy_ts, cur_dict, min_off=0.0):
             if p in ["Fabricado", "Galvanizado", "Embalaje"]: s_a[p] = max(s_a[p], e_a[p] - d[p])
             cur_dict[p] = e_a[p]
 
+    _, e_rel, t_emb_e = ciclo_relativo_lote(kgs, cap_d)
     dias_tot = int(np.ceil(max(0.0, e_a["Embalaje"])))
     return s_a, e_a, e_rel, t_emb_e, dias_tot, (sumar_dias_cl(hoy_ts, dias_tot) if dias_tot > 0 else hoy_ts)
+
+def calcular_rangos_sin_carga(df_g, hoy_ts, cap_sem_dict, f_u, fmt_s, u_lbl):
+    rows_free = []
+    for p in PROCESOS:
+        sub = df_g[(df_g["Proceso"] == p) & (df_g["Kilos"] > 0) & (df_g["Fin"] >= hoy_ts)] if not df_g.empty else pd.DataFrame()
+        cap_s_val = fmt_u(cap_sem_dict.get(p, 0.0), f_u, fmt_s)
+        if sub.empty:
+            ini_libre = sumar_dias_cl(hoy_ts, 0)
+            rows_free.append({
+                "Proceso": p, "Estado": "🟢 Sin Carga", "Fin Últ. Carga": "-",
+                "Ventanas Intermedias Libres": "Disponible de inmediato",
+                "Disponible Continuo Desde": f"Desde {ini_libre.strftime('%d/%m/%Y')} en adelante",
+                f"Cap. Semanal ({u_lbl})": cap_s_val
+            })
+            continue
+
+        intervals = sorted([(max(hoy_ts, pd.Timestamp(r["Inicio"]).normalize()), pd.Timestamp(r["Fin"]).normalize()) for _, r in sub.iterrows()])
+        merged = [intervals[0]]
+        for st_dt, en_dt in intervals[1:]:
+            prev_st, prev_en = merged[-1]
+            if st_dt <= sumar_dias_cl(prev_en, 1):
+                merged[-1] = (prev_st, max(prev_en, en_dt))
+            else:
+                merged.append((st_dt, en_dt))
+
+        gaps = []
+        first_st = merged[0][0]
+        g_ini0 = sumar_dias_cl(hoy_ts, 0)
+        g_fin0 = sumar_dias_cl(first_st, -1)
+        if g_ini0 <= g_fin0:
+            dg0 = contar_dias_cl(sumar_dias_cl(g_ini0, -1), g_fin0)
+            if dg0 > 0:
+                gaps.append(f"{g_ini0.strftime('%d/%m')} al {g_fin0.strftime('%d/%m/%Y')} ({dg0}d)")
+
+        for im in range(len(merged) - 1):
+            gi = sumar_dias_cl(merged[im][1], 1)
+            gf = sumar_dias_cl(merged[im + 1][0], -1)
+            if gi <= gf:
+                dg = contar_dias_cl(sumar_dias_cl(gi, -1), gf)
+                if dg > 0:
+                    gaps.append(f"{gi.strftime('%d/%m')} al {gf.strftime('%d/%m/%Y')} ({dg}d)")
+
+        last_end = merged[-1][1]
+        libre_desde = sumar_dias_cl(last_end, 1)
+        rows_free.append({
+            "Proceso": p, "Estado": "🟡 Con Carga", "Fin Últ. Carga": last_end.strftime("%d/%m/%Y"),
+            "Ventanas Intermedias Libres": " | ".join(gaps) if gaps else "Sin huecos intermedios",
+            "Disponible Continuo Desde": f"Desde {libre_desde.strftime('%d/%m/%Y')} en adelante",
+            f"Cap. Semanal ({u_lbl})": cap_s_val
+        })
+    return pd.DataFrame(rows_free)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def ejecutar_edd_cartera(lotes_tuple, cap_dia_tuple, hoy_str):
@@ -825,7 +892,7 @@ try:
         st.download_button("📥 Descargar Plan de Despachos Completo (CSV)", data=df_mostrar.to_csv(index=False).encode('utf-8'), file_name=f"plan_despachos_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
 
     # =============================================================
-    # PESTAÑA 2: SIMULADOR DE COTIZACIONES
+    # PESTAÑA 2: SIMULADOR DE COTIZACIONES (CÁLCULO HACIA ATRÁS)
     # =============================================================
     with tab_sim:
         mapa_tip = {}
@@ -855,14 +922,16 @@ try:
         l_tips = sorted(list(mapa_tip.keys()))
         ch1, ch2 = st.columns([3.5, 1.5])
         with ch1:
-            st.markdown(f"### 🧮 Simulador de Carga para Cotizaciones ({unidad_medida})")
-            st.caption("Ingresa estructuras cotizadas y su peso para proyectar fecha de entrega, carga semanal por estación y cuellos de botella.")
+            st.markdown(f"### 🧮 Simulador de Factibilidad & Carga para Cotizaciones ({unidad_medida})")
+            st.caption("Ingresa la Fecha Término Deseado por el cliente (por defecto +60 días hábiles) para calcular fechas hacia atrás y evaluar disponibilidad de planta.")
         pdf_slot = ch2.empty()
 
+        # Fecha Término Deseado por defecto: +60 días hábiles desde hoy
+        fecha_def_60d = sumar_dias_cl(hoy, 60).date()
         cs1, cs2, cs3 = st.columns([2.2, 2.0, 1.5])
         nom_cot = cs1.text_input("🏗️ Nombre Proyecto Cotizado:", value="Proyecto Cotización Nueva", key="sim_nom")
         cli_cot = cs2.text_input("🏢 Cliente:", value="Cliente Cotización", key="sim_cli")
-        f_ini_c = pd.Timestamp(cs3.date_input("📅 Fecha Inicio Deseada:", value=hoy.date(), min_value=hoy.date(), key="sim_fini")).normalize()
+        f_term_c = pd.Timestamp(cs3.date_input("🎯 Fecha Término Deseado:", value=fecha_def_60d, min_value=hoy.date(), key="sim_fterm")).normalize()
 
         st.markdown(f"#### 1️⃣ Estructuras Cotizadas (Agrega filas y {unidad_medida})")
         dt1 = "T ANCLAJE" if "T ANCLAJE" in l_tips else l_tips[0]
@@ -889,7 +958,7 @@ try:
             calc_rows.append({"Etiqueta": f"{idx_s+1}. {ts}", "Tipologia": ts, "p_cncl": pc["CNCL"]*100, "p_dob": pc["DoblezL"]*100, "p_sol": pc["Soldadura"]*100, "Kg_Cotizado": kg_c, **{p: kg_c * pc.get(p, 1.0) for p in PROCESOS}})
 
         if not calc_rows:
-            st.info("Ingresa al menos una estructura con peso > 0 para simular la entrega.")
+            st.info("Ingresa al menos una estructura con peso > 0 para simular la factibilidad.")
         else:
             df_ce = pd.DataFrame(calc_rows)
             df_sh = pd.DataFrame({
@@ -908,50 +977,82 @@ try:
             }])
             st.dataframe(pd.concat([df_sh, tot_r], ignore_index=True), hide_index=True, use_container_width=True)
 
-            off_ini = float(contar_dias_cl(hoy, f_ini_c))
-            cur_real, cur_vac = {p: max(off_ini, cursor[p]) for p in PROCESOS}, {p: off_ini for p in PROCESOS}
-            sim_gantt, max_fin_r, max_fin_v = [], f_ini_c, f_ini_c
-
+            # ---------------------------------------------------------
+            # CÁLCULO HACIA ATRÁS DESDE FECHA TÉRMINO DESEADO
+            # ---------------------------------------------------------
+            target_off = float(contar_dias_cl(hoy, f_term_c))
+            rel_cur = {p: 0.0 for p in PROCESOS}
+            rel_items = []
             for _, re_c in df_ce.iterrows():
                 kgs_i = {p: float(re_c[p]) for p in PROCESOS}
-                sr, er, _, _, _, ffr = programar_cola(kgs_i, cap_dia_kg, hoy, cur_real, min_off=off_ini)
-                _, _, _, _, _, ffv = programar_cola(kgs_i, cap_dia_kg, hoy, cur_vac, min_off=off_ini)
-                if ffr > max_fin_r: max_fin_r = ffr
-                if ffv > max_fin_v: max_fin_v = ffv
+                sr, er, _ = ciclo_relativo_lote(kgs_i, cap_dia_kg)
+                shift_it = max([rel_cur[p] - sr[p] for p in PROCESOS if kgs_i[p] > 0] or [0.0])
+                s_i = {p: sr[p] + shift_it for p in PROCESOS}
+                e_i = {p: er[p] + shift_it for p in PROCESOS}
                 for p in PROCESOS:
-                    dur_p = max(1, int(np.ceil(er[p] - sr[p]))) if kgs_i[p] > 0 else 0
-                    sim_gantt.append({"Estructura": re_c["Etiqueta"], "Proceso": p, "Inicio": sumar_dias_cl(hoy, int(np.floor(sr[p]))), "Fin": sumar_dias_cl(hoy, max(1, int(np.ceil(er[p])))) if kgs_i[p] > 0 else sumar_dias_cl(hoy, int(np.floor(sr[p]))), "Duracion": dur_p, "Kilos": kgs_i[p]})
+                    if kgs_i[p] > 0:
+                        rel_cur[p] = e_i[p]
+                rel_items.append((re_c, kgs_i, s_i, e_i))
+
+            total_span_dias = max(e_i["Embalaje"] for _, _, _, e_i in rel_items)
+            backward_shift = target_off - total_span_dias
+
+            sim_gantt = []
+            for re_c, kgs_i, s_i, e_i in rel_items:
+                for p in PROCESOS:
+                    sb = s_i[p] + backward_shift
+                    eb = e_i[p] + backward_shift
+                    dur_p = max(1, int(np.ceil(eb - sb))) if kgs_i[p] > 0 else 0
+                    st_dt = sumar_dias_cl(hoy, int(np.floor(sb)))
+                    en_dt = sumar_dias_cl(hoy, int(np.ceil(eb))) if kgs_i[p] > 0 else st_dt
+                    sim_gantt.append({
+                        "Estructura": re_c["Etiqueta"], "Proceso": p,
+                        "Inicio": st_dt, "Fin": en_dt, "Duracion": dur_p, "Kilos": kgs_i[p]
+                    })
 
             df_sg = pd.DataFrame(sim_gantt)
-            dias_plazo = contar_dias_cl(f_ini_c, max_fin_r)
-            dias_atr_carga = contar_dias_cl(max_fin_v, max_fin_r)
+            f_ini_req_dt = pd.to_datetime(df_sg[df_sg["Kilos"] > 0]["Inicio"]).min() if not df_sg[df_sg["Kilos"] > 0].empty else hoy
+            dias_ciclo_cot = int(np.ceil(total_span_dias))
+
+            # Simulación real hacia adelante (con cola actual de planta) para medir factibilidad
+            start_real_off = max(0.0, backward_shift)
+            cur_real = {p: max(start_real_off, cursor[p]) for p in PROCESOS}
+            cur_vac = {p: start_real_off for p in PROCESOS}
+            max_fin_r, max_fin_v = f_ini_req_dt, f_ini_req_dt
+            for _, re_c in df_ce.iterrows():
+                kgs_i = {p: float(re_c[p]) for p in PROCESOS}
+                _, _, _, _, _, ffr = programar_cola(kgs_i, cap_dia_kg, hoy, cur_real, min_off=start_real_off)
+                _, _, _, _, _, ffv = programar_cola(kgs_i, cap_dia_kg, hoy, cur_vac, min_off=start_real_off)
+                if ffr > max_fin_r: max_fin_r = ffr
+                if ffv > max_fin_v: max_fin_v = ffv
+
+            dias_desv_meta = max(0, contar_dias_cl(f_term_c, max_fin_r))
+            if backward_shift < 0:
+                dias_desv_meta = max(dias_desv_meta, abs(int(np.floor(backward_shift))))
 
             df_ssem = dist_semanal_cl(df_sg)
-            if not df_ssem.empty:
-                df_ssem = df_ssem[df_ssem["Semana"] >= sem_actual_iso].copy()
-                max_s_sim = max(max_sem_all, df_ssem["Semana"].max())
-            else:
-                max_s_sim = max_sem_all
-
-            sems_sim = sems_consecutivas(sem_actual_iso, max_s_sim, min_c=10)
-            hrs_sim = {s: info_sem_iso(s) for s in sems_sim}
+            all_sems_union = sorted(set(semanas_cols) | (set(df_ssem["Semana"].unique()) if not df_ssem.empty else set()))
+            hrs_sim = {s: info_sem_iso(s) for s in all_sems_union}
             cap_sim = {
                 p: {
                     s: (float(st.session_state.matriz_dotacion_semanal.loc[st.session_state.matriz_dotacion_semanal["Proceso"] == p, s].values[0])
                         if s in st.session_state.matriz_dotacion_semanal.columns else DOTACION_DEF[p])
                        * hrs_sim[s][0] * oee_act[p] * ratios_act.get(p, RATIO_DEF[p])
-                    for s in sems_sim
+                    for s in all_sems_union
                 }
                 for p in PROCESOS
             }
 
             st.markdown("---")
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("📅 Fecha Estimada Entrega", max_fin_r.strftime("%d/%m/%Y"))
-            k2.metric("⏱️ Plazo Total Cotización", f"{dias_plazo} días hábiles")
-            k3.metric("⚖️ Total Cotizado", f"{fmt_u(df_ce['Kg_Cotizado'].sum(), f_u, fmt_s)} {u_corto}")
-            k4.metric("⏳ Impacto Carga Actual", f"+{dias_atr_carga} días hábiles", delta=f"Planta vacía: {max_fin_v.strftime('%d/%m/%Y')}", delta_color="off")
+            k1.metric("🚀 Inicio Requerido (Hacia Atrás)", f_ini_req_dt.strftime("%d/%m/%Y"), delta="⚠️ Fecha pasada" if backward_shift < 0 else "En plazo", delta_color="inverse" if backward_shift < 0 else "off")
+            k2.metric("🎯 Fecha Término Deseado", f_term_c.strftime("%d/%m/%Y"), delta=f"Ciclo: {dias_ciclo_cot} d. hábiles", delta_color="off")
+            k3.metric("🏭 Entrega Real c/ Carga Actual", max_fin_r.strftime("%d/%m/%Y"), delta="✅ Factible en plazo" if dias_desv_meta == 0 else f"🔴 +{dias_desv_meta} d. háb. desviación", delta_color="normal" if dias_desv_meta == 0 else "inverse")
+            k4.metric("⚖️ Total Cotizado", f"{fmt_u(df_ce['Kg_Cotizado'].sum(), f_u, fmt_s)} {u_corto}")
 
+            # ---------------------------------------------------------
+            # 2️⃣ CARTA GANTT / CUADRO DE CARGA SEMANAL COTIZADA (SOLO SEMANAS DEL RANGO)
+            # ---------------------------------------------------------
             st.markdown("---")
             st.markdown(f"#### 2️⃣ Carta Gantt / Cuadro de Carga Semanal Cotizada ({unidad_medida})")
             cgf, _ = st.columns([2.5, 4.5])
@@ -962,20 +1063,44 @@ try:
             piv_sv = df_sv_sem.groupby(["Proceso", "Semana"])["Kilos"].sum().to_dict() if not df_sv_sem.empty else {}
             piv_st = df_ssem.groupby(["Proceso", "Semana"])["Kilos"].sum().to_dict() if not df_ssem.empty else {}
 
+            # Mostrar solo las semanas comprendidas entre Inicio y Término calculado de la vista
+            df_gv_act = df_gv[df_gv["Kilos"] > 0]
+            if not df_gv_act.empty:
+                dt_min_g = pd.to_datetime(df_gv_act["Inicio"]).min()
+                dt_max_g = pd.to_datetime(df_gv_act["Fin"]).max()
+                w_min_g = f"{dt_min_g.isocalendar()[0]}-{dt_min_g.isocalendar()[1]:02d}"
+                w_max_g = f"{dt_max_g.isocalendar()[0]}-{dt_max_g.isocalendar()[1]:02d}"
+                sems_gantt_cot = sems_consecutivas(w_min_g, w_max_g, min_c=1)
+            else:
+                sems_gantt_cot = [sem_actual_iso]
+
             info_ps = {}
             for p in PROCESOS:
                 sp = df_gv[(df_gv["Proceso"] == p) & (df_gv["Kilos"] > 0)]
                 kgt = float(sp["Kilos"].sum()) if not sp.empty else 0.0
-                chk = {s: piv_planta_all.get((p, s), 0.0) + piv_st.get((p, s), 0.0) for s in sems_sim}
+                chk = {s: piv_planta_all.get((p, s), 0.0) + piv_st.get((p, s), 0.0) for s in sems_gantt_cot}
                 info_ps[p] = {"ini": pd.to_datetime(sp["Inicio"]).min().strftime("%d/%m/%Y"), "fin": pd.to_datetime(sp["Fin"]).max().strftime("%d/%m/%Y"), "dias": int(np.ceil(kgt / cap_dia_kg[p])), "total_kg": kgt, "check_ov": chk} if (not sp.empty and kgt > 0) else {"ini": "-", "fin": "-", "dias": 0, "total_kg": 0.0, "check_ov": chk}
 
-            components.html(render_cuadro_semanal(piv_sv, info_ps, sems_sim, cap_sim, f_u, fmt_s, u_lbl, h=350), height=360, scrolling=False)
+            components.html(render_cuadro_semanal(piv_sv, info_ps, sems_gantt_cot, cap_sim, f_u, fmt_s, u_lbl, h=350, h_ini_lbl="Inicio<br>Req.", h_fin_lbl="Término<br>Obj."), height=360, scrolling=False)
 
+            # ---------------------------------------------------------
+            # 3️⃣ RANGOS DE FECHAS SIN CARGA POR PROCESO (DISPONIBILIDAD)
+            # ---------------------------------------------------------
+            st.markdown("---")
+            st.markdown(f"#### 3️⃣ Disponibilidad de Planta: Rangos de Fechas sin Carga por Proceso ({unidad_medida})")
+            st.caption("Identifica los tramos de fechas libres en cada estación para ubicar estructuras sin generar retrasos:")
+            cap_sem_ref = {p: cap_sim[p].get(sem_actual_iso, cap_dia_kg[p] * 5.0) for p in PROCESOS}
+            df_libres = calcular_rangos_sin_carga(df_gantt, hoy, cap_sem_ref, f_u, fmt_s, u_lbl)
+            st.dataframe(df_libres, hide_index=True, use_container_width=True)
+
+            # ---------------------------------------------------------
+            # 4️⃣ DIAGNÓSTICO DE SOBRECAPACIDAD Y PROYECTOS QUE RETRASAN
+            # ---------------------------------------------------------
             st.markdown("---")
             cd1, cd2 = st.columns(2)
             cuellos = []
             for p in PROCESOS:
-                for s in sems_sim:
+                for s in sems_gantt_cot:
                     kc = piv_st.get((p, s), 0.0)
                     if kc <= 0: continue
                     ka, cs = piv_planta_all.get((p, s), 0.0), cap_sim[p].get(s, 0.0)
@@ -985,13 +1110,13 @@ try:
 
             with cd1:
                 st.markdown("#### 🚨 Procesos con Sobrecapacidad y Semanas Críticas")
-                if df_cuellos.empty: st.success("✅ Ningún proceso supera su capacidad semanal.")
+                if df_cuellos.empty: st.success("✅ Ningún proceso supera su capacidad semanal en la ventana cotizada.")
                 else: st.dataframe(df_cuellos, hide_index=True, use_container_width=True)
 
-            p_crit = set(df_cuellos["Proceso"].unique()) if not df_cuellos.empty else {p for p in PROCESOS if cursor[p] > off_ini and df_ce[p].sum() > 0}
+            p_crit = set(df_cuellos["Proceso"].unique()) if not df_cuellos.empty else {p for p in PROCESOS if cursor[p] > max(0.0, backward_shift) and df_ce[p].sum() > 0}
             imp_rows = []
             if not df_gantt.empty and p_crit:
-                dgc = df_gantt[(df_gantt["Proceso"].isin(p_crit)) & (df_gantt["Kilos"] > 0) & (df_gantt["Fin"] >= f_ini_c)]
+                dgc = df_gantt[(df_gantt["Proceso"].isin(p_crit)) & (df_gantt["Kilos"] > 0) & (df_gantt["Fin"] >= max(hoy, f_ini_req_dt))]
                 if not dgc.empty:
                     grp = dgc.groupby(["Proyecto_Display", "Subproyecto", "Identificador de fila", "Fecha_Prog_Str"], as_index=False).agg(Kilos_Oc=("Kilos", "sum"), Procs=("Proceso", lambda x: ", ".join(sorted(set(x)))), Fin_E=("Fin", "max")).sort_values("Kilos_Oc", ascending=False)
                     for _, rp in grp.head(12).iterrows():
@@ -999,11 +1124,11 @@ try:
             df_imp = pd.DataFrame(imp_rows)
 
             with cd2:
-                st.markdown("#### 🏗️ Proyectos Activos que Provocan el Retraso")
-                if df_imp.empty: st.success("✅ Ningún proyecto activo bloquea la ruta crítica.")
+                st.markdown("#### 🏗️ Proyectos Activos que Ocupan la Ventana Cotizada")
+                if df_imp.empty: st.success("✅ Ningún proyecto activo bloquea la ventana cotizada.")
                 else: st.dataframe(df_imp, hide_index=True, use_container_width=True)
 
-            # Preparar datos PDF con claves exactas de PROCESOS (sin KeyError)
+            # Generar y mostrar PDF en la cabecera superior
             df_est_pdf = pd.DataFrame({
                 "Estructura": df_ce["Etiqueta"].tolist() + ["TOTAL COTIZACIÓN"],
                 "% Ing": ["100%"] * len(df_ce) + ["100%"],
@@ -1016,22 +1141,22 @@ try:
             df_g_pdf = pd.DataFrame([
                 {
                     "Procesos": f"{i+1}. {p}",
-                    "Inicio Est.": info_ps[p]["ini"],
-                    "Término Est.": info_ps[p]["fin"],
+                    "Inicio Req.": info_ps[p]["ini"],
+                    "Término Obj.": info_ps[p]["fin"],
                     "Días": info_ps[p]["dias"],
                     f"Total ({u_lbl})": fmt_u(info_ps[p]["total_kg"], f_u, fmt_s) if info_ps[p]["total_kg"] > 0 else "-",
-                    "_ov_sems": {s for s in sems_sim[:10] if info_ps[p]["check_ov"].get(s, 0) > cap_sim[p].get(s, 9e9) > 0},
-                    **{s: fmt_u(piv_st[(p, s)], f_u, fmt_s) if piv_st.get((p, s), 0) > 0 else "-" for s in sems_sim[:10]}
+                    "_ov_sems": {s for s in sems_gantt_cot[:12] if info_ps[p]["check_ov"].get(s, 0) > cap_sim[p].get(s, 9e9) > 0},
+                    **{s: fmt_u(piv_st[(p, s)], f_u, fmt_s) if piv_st.get((p, s), 0) > 0 else "-" for s in sems_gantt_cot[:12]}
                 }
                 for i, p in enumerate(PROCESOS)
             ])
             pdf_bytes = crear_pdf_cotizacion(
                 proy=nom_cot, cli=cli_cot,
-                f_ini=f_ini_c.strftime("%d/%m/%Y"), f_fin=max_fin_r.strftime("%d/%m/%Y"), f_vacia=max_fin_v.strftime("%d/%m/%Y"),
-                dias_h=dias_plazo, dias_atr=dias_atr_carga,
+                f_ini_req=f_ini_req_dt.strftime("%d/%m/%Y"), f_term_des=f_term_c.strftime("%d/%m/%Y"), f_real_cola=max_fin_r.strftime("%d/%m/%Y"),
+                dias_ciclo=dias_ciclo_cot, dias_desv=dias_desv_meta,
                 tot_cot_fmt=fmt_u(df_ce["Kg_Cotizado"].sum(), f_u, fmt_s),
                 oee_cncl=oee_cncl_pct, oee_otros=oee_otros_pct, u_lbl=u_lbl,
-                df_est=df_est_pdf, df_gantt=df_g_pdf, sems=sems_sim, df_cuellos=df_cuellos, df_imp=df_imp
+                df_est=df_est_pdf, df_gantt=df_g_pdf, sems=sems_gantt_cot, df_cuellos=df_cuellos, df_imp=df_imp, df_libres=df_libres
             )
             pdf_slot.download_button("📄 Descargar Informe PDF", data=pdf_bytes, file_name=f"Informe_Cotizacion_{clean_txt(nom_cot)}_{datetime.now().strftime('%Y%m%d')}.pdf", mime="application/pdf", use_container_width=True, key="dl_pdf_cot")
 
