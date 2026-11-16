@@ -19,7 +19,7 @@ PROCESOS = ["Ingeniería", "CNCL", "DoblezL", "Soldadura", "Fabricado", "Galvani
 DOTACION_DEF = {"Ingeniería": 8, "CNCL": 12, "DoblezL": 3, "Soldadura": 12, "Fabricado": 1, "Galvanizado": 1, "Embalaje": 8}
 RATIO_DEF = {"Ingeniería": 120.0, "CNCL": 120.0, "DoblezL": 100.0, "Soldadura": 60.0, "Fabricado": 1500.0, "Galvanizado": 2000.0, "Embalaje": 350.0}
 OEE_DEF = {"Ingeniería": 90.0, "CNCL": 45.0, "DoblezL": 90.0, "Soldadura": 90.0, "Fabricado": 90.0, "Galvanizado": 90.0, "Embalaje": 90.0}
-VERSION_KEY = "v17_asap_edd_queue_chile"
+VERSION_KEY = "v18_cap50_90_flujo_tab"
 
 # Feriados nacionales de Chile (no regionales) 2025 - 2028
 FERIADOS_CL = {pd.Timestamp(d).normalize() for d in [
@@ -320,7 +320,7 @@ def crear_pdf_cotizacion(proy, cli, f_ini_req, f_term_des, f_real_cola, dias_cic
     return pdf.build()
 
 # -------------------------------------------------------------
-# 3. RENDERIZADORES HTML COMPACTOS
+# 3. RENDERIZADORES HTML COMPACTOS + DIAGRAMA DE FLUJO SVG
 # -------------------------------------------------------------
 CSS_BASE = """
 body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#fff}
@@ -430,8 +430,49 @@ def render_carga_proceso(df_p, sems, cap_sem, f_u, fmt, u_lbl):
     </thead><tbody>{''.join(rows)}</tbody></table>"""
     return html_box(css, tbl, 530)
 
+def render_diagrama_flujo_svg(cola_info, proc_activo):
+    nodes = [
+        ("Ingeniería",  "Ingeniería",  15,  18),
+        ("CNCL",        "CNCL",        185, 18),
+        ("DoblezL",     "Doblez L",    345, 118),
+        ("Soldadura",   "Soldadura",   445, 218),
+        ("Fabricado",   "Fabricado",   565, 18),
+        ("Galvanizado", "Galvanizado", 740, 18),
+        ("Embalaje",    "Embalado",    915, 18),
+    ]
+    W_BOX, H_BOX = 136, 62
+    arrows = [
+        "M 151 49 L 179 49",
+        "M 321 49 L 633 49 L 633 12",
+        "M 253 80 L 253 149 L 339 149",
+        "M 481 149 L 530 149 L 530 62 L 559 62",
+        "M 413 180 L 413 249 L 439 249",
+        "M 581 249 L 633 249 L 633 86",
+        "M 701 49 L 734 49",
+        "M 876 49 L 909 49",
+    ]
+    paths_svg = "".join(f'<path d="{d}" fill="none" stroke="#1e3a5f" stroke-width="1.6" marker-end="url(#arrow)"/>' for d in arrows)
+    boxes_svg = []
+    for key, label, x, y in nodes:
+        ton_val, lotes_cnt = cola_info.get(key, (0.0, 0))
+        is_sel = (key == proc_activo)
+        stroke_col = "#0284c7" if is_sel else "#1e293b"
+        stroke_w = "2.6" if is_sel else "1.3"
+        hdr_fill = "#0284c7" if is_sel else "#135b79"
+        body_fill = "#e0f2fe" if is_sel else "#f8fafc"
+        boxes_svg.append(f"""
+        <g>
+            <rect x="{x}" y="{y}" width="{W_BOX}" height="{H_BOX}" rx="6" fill="{body_fill}" stroke="{stroke_col}" stroke-width="{stroke_w}"/>
+            <rect x="{x}" y="{y}" width="{W_BOX}" height="22" rx="5" fill="{hdr_fill}"/>
+            <text x="{x + W_BOX/2}" y="{y + 15}" text-anchor="middle" fill="#ffffff" font-size="11.5" font-weight="700">{label}</text>
+            <text x="{x + W_BOX/2}" y="{y + 40}" text-anchor="middle" fill="#0f172a" font-size="12.5" font-weight="800">{ton_val:,.2f} Ton</text>
+            <text x="{x + W_BOX/2}" y="{y + 55}" text-anchor="middle" fill="#475569" font-size="10">{lotes_cnt} lotes en cola</text>
+        </g>
+        """)
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#fff}}.wrap{{width:100%;overflow-x:auto;border:1px solid #cbd5e1;border-radius:8px;background:#ffffff;padding:8px 0}}</style></head><body><div class="wrap"><svg viewBox="0 0 1068 296" width="100%" style="min-width:780px;max-height:295px;display:block"><defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="#1e3a5f"/></marker></defs>{paths_svg}{''.join(boxes_svg)}</svg></div></body></html>"""
+
 # -------------------------------------------------------------
-# 4. MOTOR DE PROGRAMACIÓN ASAP CON PRIORIZACIÓN EDD
+# 4. MOTOR DE PROGRAMACIÓN ASAP CON TOPES 50% / 90% Y PRIORIZACIÓN EDD
 # -------------------------------------------------------------
 @st.cache_data(ttl=300, show_spinner=False)
 def dist_semanal_cl(df_g):
@@ -456,49 +497,107 @@ def dist_semanal_cl(df_g):
             rows.append({"Semana": wk, "Proceso": r["Proceso"], "Identificador de fila": r.get("Identificador de fila", ""), "Estructura": r.get("Estructura", ""), "Kilos": (hw / tot_h) * r["Kilos"]})
     return pd.DataFrame(rows)
 
-def ciclo_relativo_lote(kgs, cap_d):
-    d = {p: kgs.get(p, 0.0) / cap_d[p] for p in PROCESOS}
-    s_r, e_r = {}, {}
-    s_r["Ingeniería"] = 0.0; e_r["Ingeniería"] = d["Ingeniería"]
-    s_r["CNCL"] = 0.50 * d["Ingeniería"]; e_r["CNCL"] = s_r["CNCL"] + d["CNCL"]
-    s_r["DoblezL"] = s_r["CNCL"] + 0.30 * d["CNCL"]; e_r["DoblezL"] = s_r["DoblezL"] + d["DoblezL"]
-    s_r["Soldadura"] = max(s_r["DoblezL"] + 0.25 * d["DoblezL"], s_r["CNCL"] + 0.50 * d["CNCL"]) if d["DoblezL"] > 0 else s_r["CNCL"] + 0.30 * d["CNCL"]
-    e_r["Soldadura"] = s_r["Soldadura"] + d["Soldadura"]
-    s_r["Fabricado"] = (s_r["Soldadura"] + 0.50 * d["Soldadura"]) if d["Soldadura"] > 0 else ((s_r["DoblezL"] + 0.50 * d["DoblezL"]) if d["DoblezL"] > 0 else s_r["CNCL"] + 0.50 * d["CNCL"])
-    e_r["Fabricado"] = max(s_r["Fabricado"] + d["Fabricado"], e_r["Ingeniería"], e_r["CNCL"], e_r["DoblezL"], e_r["Soldadura"])
-    if d["Fabricado"] > 0: s_r["Fabricado"] = max(s_r["Fabricado"], e_r["Fabricado"] - d["Fabricado"])
-    s_r["Galvanizado"] = max(s_r["Fabricado"] + 0.50 * d["Fabricado"], e_r["Soldadura"]) if d["Fabricado"] > 0 else e_r["Soldadura"]
-    e_r["Galvanizado"] = max(s_r["Galvanizado"] + d["Galvanizado"], e_r["Fabricado"])
-    if d["Galvanizado"] > 0: s_r["Galvanizado"] = max(s_r["Galvanizado"], e_r["Galvanizado"] - d["Galvanizado"])
-    s_r["Embalaje"] = max(s_r["Galvanizado"] + 0.30 * d["Galvanizado"], e_r["Fabricado"]) if d["Galvanizado"] > 0 else e_r["Fabricado"]
-    e_r["Embalaje"] = max(s_r["Embalaje"] + d["Embalaje"], e_r["Galvanizado"])
-    if d["Embalaje"] > 0: s_r["Embalaje"] = max(s_r["Embalaje"], e_r["Embalaje"] - d["Embalaje"])
-    return s_r, e_r, e_r["Embalaje"]
-
 def programar_cola(kgs, cap_d, hoy_ts, cur_dict, min_off=0.0):
     d = {p: kgs.get(p, 0.0) / cap_d[p] for p in PROCESOS}
     s_a, e_a = {}, {}
-    for p in PROCESOS:
-        if p == "Ingeniería": req = min_off
-        elif p == "CNCL": req = s_a["Ingeniería"] + 0.50 * d["Ingeniería"]
-        elif p == "DoblezL": req = s_a["CNCL"] + 0.30 * d["CNCL"]
-        elif p == "Soldadura": req = max(s_a["DoblezL"] + 0.25 * d["DoblezL"], s_a["CNCL"] + 0.50 * d["CNCL"]) if d["DoblezL"] > 0 else s_a["CNCL"] + 0.30 * d["CNCL"]
-        elif p == "Fabricado": req = (s_a["Soldadura"] + 0.50 * d["Soldadura"]) if d["Soldadura"] > 0 else ((s_a["DoblezL"] + 0.50 * d["DoblezL"]) if d["DoblezL"] > 0 else s_a["CNCL"] + 0.50 * d["CNCL"])
-        elif p == "Galvanizado": req = max(s_a["Fabricado"] + 0.50 * d["Fabricado"], e_a["Soldadura"]) if d["Fabricado"] > 0 else e_a["Soldadura"]
-        else: req = max(s_a["Galvanizado"] + 0.30 * d["Galvanizado"], e_a["Fabricado"]) if d["Galvanizado"] > 0 else e_a["Fabricado"]
 
-        s_a[p] = max(req, cur_dict[p]) if d[p] > 0 else req
-        e_a[p] = s_a[p] + d[p]
-        if p == "Fabricado": e_a[p] = max(e_a[p], e_a["Ingeniería"], e_a["CNCL"], e_a["DoblezL"], e_a["Soldadura"])
-        elif p == "Galvanizado": e_a[p] = max(e_a[p], e_a["Fabricado"])
-        elif p == "Embalaje": e_a[p] = max(e_a[p], e_a["Galvanizado"])
-        if d[p] > 0:
-            if p in ["Fabricado", "Galvanizado", "Embalaje"]: s_a[p] = max(s_a[p], e_a[p] - d[p])
-            cur_dict[p] = e_a[p]
+    # 1. Ingeniería
+    s_a["Ingeniería"] = max(min_off, cur_dict["Ingeniería"]) if d["Ingeniería"] > 0 else min_off
+    e_a["Ingeniería"] = s_a["Ingeniería"] + d["Ingeniería"]
+    if d["Ingeniería"] > 0:
+        cur_dict["Ingeniería"] = e_a["Ingeniería"]
 
-    _, e_rel, t_emb_e = ciclo_relativo_lote(kgs, cap_d)
+    # 2. CNCL (Ingeniería <= 50% avance CNCL => E_Ing <= S_CNCL + 0.50 * d_CNCL)
+    if d["CNCL"] > 0:
+        req_s = s_a["Ingeniería"] + 0.50 * d["Ingeniería"]
+        req_c50 = e_a["Ingeniería"] - 0.50 * d["CNCL"]
+        s_a["CNCL"] = max(req_s, req_c50, cur_dict["CNCL"])
+        e_a["CNCL"] = max(s_a["CNCL"] + d["CNCL"], e_a["Ingeniería"])
+        s_a["CNCL"] = e_a["CNCL"] - d["CNCL"]
+        cur_dict["CNCL"] = e_a["CNCL"]
+    else:
+        s_a["CNCL"] = e_a["Ingeniería"]
+        e_a["CNCL"] = s_a["CNCL"]
+
+    # 3. DoblezL (desde CNCL)
+    if d["DoblezL"] > 0:
+        req_dob = s_a["CNCL"] + 0.30 * d["CNCL"] if d["CNCL"] > 0 else e_a["Ingeniería"]
+        s_a["DoblezL"] = max(req_dob, e_a["CNCL"] - 0.90 * d["DoblezL"], cur_dict["DoblezL"])
+        e_a["DoblezL"] = max(s_a["DoblezL"] + d["DoblezL"], e_a["CNCL"])
+        s_a["DoblezL"] = e_a["DoblezL"] - d["DoblezL"]
+        cur_dict["DoblezL"] = e_a["DoblezL"]
+    else:
+        s_a["DoblezL"] = s_a["CNCL"] + 0.30 * d["CNCL"] if d["CNCL"] > 0 else e_a["Ingeniería"]
+        e_a["DoblezL"] = s_a["DoblezL"]
+
+    # 4. Soldadura (desde DoblezL o CNCL)
+    if d["Soldadura"] > 0:
+        if d["DoblezL"] > 0:
+            req_sol = max(s_a["DoblezL"] + 0.25 * d["DoblezL"], e_a["DoblezL"] - 0.90 * d["Soldadura"])
+            prev_e = e_a["DoblezL"]
+        elif d["CNCL"] > 0:
+            req_sol = max(s_a["CNCL"] + 0.50 * d["CNCL"], e_a["CNCL"] - 0.90 * d["Soldadura"])
+            prev_e = e_a["CNCL"]
+        else:
+            req_sol = e_a["Ingeniería"]
+            prev_e = e_a["Ingeniería"]
+        s_a["Soldadura"] = max(req_sol, cur_dict["Soldadura"])
+        e_a["Soldadura"] = max(s_a["Soldadura"] + d["Soldadura"], prev_e)
+        s_a["Soldadura"] = e_a["Soldadura"] - d["Soldadura"]
+        cur_dict["Soldadura"] = e_a["Soldadura"]
+    else:
+        s_a["Soldadura"] = e_a["DoblezL"] if d["DoblezL"] > 0 else (s_a["CNCL"] + 0.30 * d["CNCL"] if d["CNCL"] > 0 else e_a["Ingeniería"])
+        e_a["Soldadura"] = s_a["Soldadura"]
+
+    # 5. Fabricado (CNCL, DoblezL y Soldadura <= 90% avance Fabricado)
+    max_up_fab = max(e_a["Ingeniería"], e_a["CNCL"], e_a["DoblezL"], e_a["Soldadura"])
+    if d["Soldadura"] > 0:
+        req_fab_s = s_a["Soldadura"] + 0.50 * d["Soldadura"]
+    elif d["DoblezL"] > 0:
+        req_fab_s = s_a["DoblezL"] + 0.50 * d["DoblezL"]
+    elif d["CNCL"] > 0:
+        req_fab_s = s_a["CNCL"] + 0.50 * d["CNCL"]
+    else:
+        req_fab_s = e_a["Ingeniería"]
+
+    if d["Fabricado"] > 0:
+        s_a["Fabricado"] = max(req_fab_s, max_up_fab - 0.90 * d["Fabricado"], cur_dict["Fabricado"])
+        e_a["Fabricado"] = max(s_a["Fabricado"] + d["Fabricado"], max_up_fab)
+        s_a["Fabricado"] = e_a["Fabricado"] - d["Fabricado"]
+        cur_dict["Fabricado"] = e_a["Fabricado"]
+    else:
+        s_a["Fabricado"] = max_up_fab
+        e_a["Fabricado"] = max_up_fab
+
+    # 6. Galvanizado (Fabricado <= 90% avance Galvanizado)
+    if d["Galvanizado"] > 0:
+        req_gal_s = s_a["Fabricado"] + 0.50 * d["Fabricado"] if d["Fabricado"] > 0 else e_a["Fabricado"]
+        s_a["Galvanizado"] = max(req_gal_s, e_a["Fabricado"] - 0.90 * d["Galvanizado"], cur_dict["Galvanizado"])
+        e_a["Galvanizado"] = max(s_a["Galvanizado"] + d["Galvanizado"], e_a["Fabricado"])
+        s_a["Galvanizado"] = e_a["Galvanizado"] - d["Galvanizado"]
+        cur_dict["Galvanizado"] = e_a["Galvanizado"]
+    else:
+        s_a["Galvanizado"] = e_a["Fabricado"]
+        e_a["Galvanizado"] = e_a["Fabricado"]
+
+    # 7. Embalaje (Galvanizado <= 90% avance Embalaje)
+    if d["Embalaje"] > 0:
+        req_emb_s = s_a["Galvanizado"] + 0.30 * d["Galvanizado"] if d["Galvanizado"] > 0 else e_a["Galvanizado"]
+        s_a["Embalaje"] = max(req_emb_s, e_a["Galvanizado"] - 0.90 * d["Embalaje"], cur_dict["Embalaje"])
+        e_a["Embalaje"] = max(s_a["Embalaje"] + d["Embalaje"], e_a["Galvanizado"])
+        s_a["Embalaje"] = e_a["Embalaje"] - d["Embalaje"]
+        cur_dict["Embalaje"] = e_a["Embalaje"]
+    else:
+        s_a["Embalaje"] = e_a["Galvanizado"]
+        e_a["Embalaje"] = e_a["Galvanizado"]
+
     dias_tot = int(np.ceil(max(0.0, e_a["Embalaje"])))
-    return s_a, e_a, e_rel, t_emb_e, dias_tot, (sumar_dias_cl(hoy_ts, dias_tot) if dias_tot > 0 else hoy_ts)
+    return s_a, e_a, dias_tot, (sumar_dias_cl(hoy_ts, dias_tot) if dias_tot > 0 else hoy_ts)
+
+def ciclo_relativo_lote(kgs, cap_d):
+    zero_cur = {p: 0.0 for p in PROCESOS}
+    s_r, e_r, _, _ = programar_cola(kgs, cap_d, pd.Timestamp.now().normalize(), zero_cur, min_off=0.0)
+    return s_r, e_r, e_r["Embalaje"]
 
 def calcular_rangos_sin_carga(df_g, hoy_ts, cap_sem_dict, f_u, fmt_s, u_lbl):
     rows_free = []
@@ -553,10 +652,6 @@ def calcular_rangos_sin_carga(df_g, hoy_ts, cap_sem_dict, f_u, fmt_s, u_lbl):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def ejecutar_edd_cartera(lotes_tuple, cap_dia_tuple, hoy_str):
-    """
-    Cola continua ASAP (min_off=0.0): cada estación procesa sin esperar la fecha de despacho,
-    usando la Fecha Programada exclusivamente como criterio de priorización (EDD).
-    """
     cap_dia_kg = dict(cap_dia_tuple)
     hoy = pd.Timestamp(hoy_str).normalize()
     cursor = {p: 0.0 for p in PROCESOS}
@@ -576,9 +671,10 @@ def ejecutar_edd_cartera(lotes_tuple, cap_dia_tuple, hoy_str):
                 adel = contar_dias_cl(f_fin, f_prog)
                 diag = f"🔵 Adelanto (-{adel}d)" if adel > 0 else "🟢 Embalado (OK)"
             for p in PROCESOS:
-                gantt_all.append({"Identificador de fila": it["id"], "Subproyecto": it["subp"], "Proyecto_Display": it["proy"], "Fecha_Prog_Str": f_prog.strftime("%d/%m/%Y"), "Proceso": p, "Inicio": f_fin, "Fin": f_fin, "Fecha_Limite": f_prog, "Duracion": 0, "Kilos": kgs[p], "Fuera_Plazo": f_fin > f_prog, "Dias_Desv_Proc": desv, "Ruta_Tooltip": tip})
+                gantt_all.append({"Identificador de fila": it["id"], "Subproyecto": it["subp"], "Proyecto_Display": it["proy"], "Fecha_Prog_Str": f_prog.strftime("%d/%m/%Y"), "Fecha_DT": f_prog, "Proceso": p, "Inicio": f_fin, "Fin": f_fin, "Fecha_Limite": f_prog, "Duracion": 0, "Kilos": kgs[p], "Fuera_Plazo": f_fin > f_prog, "Dias_Desv_Proc": desv, "Diagnostico": diag, "Ruta_Tooltip": tip})
         else:
-            s_a, e_a, e_rel, t_emb_e, dias_tot, _ = programar_cola(kgs, cap_dia_kg, hoy, cursor, min_off=0.0)
+            s_a, e_a, dias_tot, _ = programar_cola(kgs, cap_dia_kg, hoy, cursor, min_off=0.0)
+            _, e_rel, t_emb_e = ciclo_relativo_lote(kgs, cap_dia_kg)
             if dias_tot == 0:
                 f_fin, desv, diag = hoy, 0, "🟢 Completado"
             else:
@@ -599,7 +695,7 @@ def ejecutar_edd_cartera(lotes_tuple, cap_dia_tuple, hoy_str):
                 st_dt, en_dt = sumar_dias_cl(hoy, int(np.floor(s_a[p]))), (sumar_dias_cl(hoy, max(1, int(np.ceil(e_a[p])))) if kgs[p] > 0 else sumar_dias_cl(hoy, int(np.floor(s_a[p]))))
                 f_lim = sumar_dias_cl(f_prog, -max(0, int(np.ceil(t_emb_e - e_rel[p]))))
                 fp_b = bool(kgs[p] > 0 and en_dt > f_lim)
-                gantt_all.append({"Identificador de fila": it["id"], "Subproyecto": it["subp"], "Proyecto_Display": it["proy"], "Fecha_Prog_Str": f_prog.strftime("%d/%m/%Y"), "Proceso": p, "Inicio": st_dt, "Fin": en_dt, "Fecha_Limite": f_lim, "Duracion": dur_p, "Kilos": kgs[p], "Fuera_Plazo": fp_b, "Dias_Desv_Proc": max(1, (en_dt - f_lim).days) if fp_b else 0, "Ruta_Tooltip": tip})
+                gantt_all.append({"Identificador de fila": it["id"], "Subproyecto": it["subp"], "Proyecto_Display": it["proy"], "Fecha_Prog_Str": f_prog.strftime("%d/%m/%Y"), "Fecha_DT": f_prog, "Proceso": p, "Inicio": st_dt, "Fin": en_dt, "Fecha_Limite": f_lim, "Duracion": dur_p, "Kilos": kgs[p], "Fuera_Plazo": fp_b, "Dias_Desv_Proc": max(1, (en_dt - f_lim).days) if fp_b else 0, "Diagnostico": diag, "Ruta_Tooltip": tip})
 
         filas_res.append({
             "Identificador de fila": it["id"], "Subproyecto": it["subp"], "Proyecto_Display": it["proy"],
@@ -806,10 +902,17 @@ try:
     }
 
     # -------------------------------------------------------------
-    # 8. PESTAÑAS PRINCIPALES
+    # 8. PESTAÑAS PRINCIPALES (3 PESTAÑAS)
     # -------------------------------------------------------------
-    tab_ctrl, tab_sim = st.tabs(["📋 Control de Despachos & Carga Semanal", "🧮 Simulador de Cotizaciones"])
+    tab_ctrl, tab_flujo, tab_sim = st.tabs([
+        "📋 Control de Despachos & Carga Semanal",
+        "🔀 Flujo de Planta & Cola por Proceso",
+        "🧮 Simulador de Cotizaciones"
+    ])
 
+    # =============================================================
+    # PESTAÑA 1: CONTROL DE DESPACHOS & CARGA SEMANAL
+    # =============================================================
     with tab_ctrl:
         c1, c2, c3, c4, c5 = st.columns([1.2, 1.2, 1.2, 1.2, 1.2])
         if c5.checkbox("🔴 Solo con retraso", key="f_atr_global"):
@@ -835,7 +938,7 @@ try:
 
         st.markdown("---")
         st.markdown(f"### 📋 Programa de Despachos & Estado de Carga por Estación ({unidad_medida})")
-        st.caption("Cola continua ASAP (sin retenes por fecha futura): los lotes entran tan pronto hay capacidad, priorizados por Fecha Programada más próxima.")
+        st.caption("Calculado desde hoy en cola continua ASAP (priorizada por Fecha Programada más cercana) con topes de avance 50% en CNCL y 90% en Fabricado, Galvanizado y Embalaje.")
         tot_d1 = {k: df_mostrar[col].sum() for k, col in [("orden","Kg Orden Proceder"),("ing","Kg por cargar (Ing)"),("cncl","Kg por procesar CNCL"),("doblez","Kg por procesar DoblezL"),("sold","Kg por procesar Soldadura"),("fab","Kg por procesar Fabricado"),("galv","Kg por galvanizar"),("emb","Kg por Embalar")]}
         components.html(render_tabla_despachos(df_mostrar, tot_d1, f_u, fmt_s, u_lbl), height=520, scrolling=False)
 
@@ -906,7 +1009,86 @@ try:
         st.download_button("📥 Descargar Plan de Despachos Completo (CSV)", data=df_mostrar.to_csv(index=False).encode('utf-8'), file_name=f"plan_despachos_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
 
     # =============================================================
-    # PESTAÑA 2: SIMULADOR DE COTIZACIONES (CÁLCULO HACIA ATRÁS)
+    # PESTAÑA 2: FLUJO DE PLANTA & COLA POR PROCESO
+    # =============================================================
+    with tab_flujo:
+        st.markdown("### 🔀 Flujo Operativo de Planta & Toneladas en Cola por Estación")
+        st.caption("Haz clic en cualquiera de las cajas de proceso para auditar los proyectos en cola ordenados por fecha de entrega ascendente.")
+
+        if "flujo_proc_sel" not in st.session_state:
+            st.session_state.flujo_proc_sel = "CNCL"
+
+        df_gf_flujo = df_gantt[df_gantt["Identificador de fila"].isin(lotes_vis)].copy()
+        cola_info = {}
+        for p in PROCESOS:
+            sub_p = df_gf_flujo[(df_gf_flujo["Proceso"] == p) & (df_gf_flujo["Kilos"] > 0)] if not df_gf_flujo.empty else pd.DataFrame()
+            ton_p = float(sub_p["Kilos"].sum()) / 1000.0 if not sub_p.empty else 0.0
+            cnt_p = len(sub_p)
+            cola_info[p] = (ton_p, cnt_p)
+
+        svg_flujo = render_diagrama_flujo_svg(cola_info, st.session_state.flujo_proc_sel)
+        components.html(svg_flujo, height=305, scrolling=False)
+
+        st.markdown("**Selecciona una caja de proceso:**")
+        cols_btn = st.columns(7)
+        nombres_caja = [
+            ("Ingeniería", "1. Ingeniería"),
+            ("CNCL", "2. CNCL"),
+            ("DoblezL", "3. Doblez L"),
+            ("Soldadura", "4. Soldadura"),
+            ("Fabricado", "5. Fabricado"),
+            ("Galvanizado", "6. Galvanizado"),
+            ("Embalaje", "7. Embalado"),
+        ]
+        for idx_b, (p_key, p_lbl) in enumerate(nombres_caja):
+            ton_v, cnt_v = cola_info[p_key]
+            is_act = (st.session_state.flujo_proc_sel == p_key)
+            if cols_btn[idx_b].button(
+                f"{p_lbl}\n{ton_v:,.2f} Ton ({cnt_v})",
+                key=f"btn_flujo_{p_key}",
+                type="primary" if is_act else "secondary",
+                use_container_width=True
+            ):
+                st.session_state.flujo_proc_sel = p_key
+                st.rerun()
+
+        proc_f_sel = st.session_state.flujo_proc_sel
+        lbl_f_sel = dict(nombres_caja).get(proc_f_sel, proc_f_sel)
+        ton_tot_sel, cnt_tot_sel = cola_info[proc_f_sel]
+
+        st.markdown("---")
+        st.markdown(f"#### 📦 Proyectos en Cola — **{lbl_f_sel}** (`{ton_tot_sel:,.2f} Ton` | `{cnt_tot_sel}` lotes ordenados por Fecha de Entrega)")
+
+        df_cola_proc = df_gf_flujo[(df_gf_flujo["Proceso"] == proc_f_sel) & (df_gf_flujo["Kilos"] > 0)].copy() if not df_gf_flujo.empty else pd.DataFrame()
+        if df_cola_proc.empty:
+            st.success(f"✅ No hay proyectos pendientes en cola para **{lbl_f_sel}** con los filtros actuales.")
+        else:
+            df_cola_proc = df_cola_proc.sort_values(by=["Fecha_DT", "Subproyecto", "Identificador de fila"], ascending=[True, True, True]).reset_index(drop=True)
+            df_tabla_cola = pd.DataFrame({
+                "Orden": [f"#{i+1}" for i in range(len(df_cola_proc))],
+                "ID Fila": df_cola_proc["Identificador de fila"],
+                "Proyecto": df_cola_proc["Proyecto_Display"],
+                "Subproyecto": df_cola_proc["Subproyecto"],
+                "Toneladas en Cola (t)": df_cola_proc["Kilos"].map(lambda x: f"{x/1000.0:,.2f}"),
+                "Kilos en Cola (kg)": df_cola_proc["Kilos"].map(lambda x: f"{x:,.0f}"),
+                "Días Est. Proceso": df_cola_proc["Duracion"].astype(int),
+                "Inicio Est. Proceso": pd.to_datetime(df_cola_proc["Inicio"]).dt.strftime("%d/%m/%Y"),
+                "Término Est. Proceso": pd.to_datetime(df_cola_proc["Fin"]).dt.strftime("%d/%m/%Y"),
+                "Fecha Obj. Proceso": pd.to_datetime(df_cola_proc["Fecha_Limite"]).dt.strftime("%d/%m/%Y"),
+                "Fecha Entrega Prog.": df_cola_proc["Fecha_Prog_Str"],
+                "Estado / Desviación": df_cola_proc["Diagnostico"],
+            })
+            st.dataframe(df_tabla_cola, hide_index=True, use_container_width=True, height=440)
+            st.download_button(
+                f"📥 Descargar Cola de {lbl_f_sel} (CSV)",
+                data=df_tabla_cola.to_csv(index=False).encode("utf-8"),
+                file_name=f"cola_{clean_txt(lbl_f_sel)}_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                key="dl_csv_flujo"
+            )
+
+    # =============================================================
+    # PESTAÑA 3: SIMULADOR DE COTIZACIONES (CÁLCULO HACIA ATRÁS)
     # =============================================================
     with tab_sim:
         mapa_tip = {}
@@ -1030,8 +1212,8 @@ try:
             max_fin_r, max_fin_v = f_ini_req_dt, f_ini_req_dt
             for _, re_c in df_ce.iterrows():
                 kgs_i = {p: float(re_c[p]) for p in PROCESOS}
-                _, _, _, _, _, ffr = programar_cola(kgs_i, cap_dia_kg, hoy, cur_real, min_off=start_real_off)
-                _, _, _, _, _, ffv = programar_cola(kgs_i, cap_dia_kg, hoy, cur_vac, min_off=start_real_off)
+                _, _, _, ffr = programar_cola(kgs_i, cap_dia_kg, hoy, cur_real, min_off=start_real_off)
+                _, _, _, ffv = programar_cola(kgs_i, cap_dia_kg, hoy, cur_vac, min_off=start_real_off)
                 if ffr > max_fin_r: max_fin_r = ffr
                 if ffv > max_fin_v: max_fin_v = ffv
 
