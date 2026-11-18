@@ -4,6 +4,8 @@ import pandas as pd
 import smartsheet
 import re
 import unicodedata
+import inspect
+import plotly.graph_objects as go
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
@@ -20,7 +22,7 @@ PROCESOS = ["Ingeniería", "CNCL", "DoblezL", "Soldadura", "Fabricado", "Galvani
 DOTACION_DEF = {"Ingeniería": 8, "CNCL": 12, "DoblezL": 3, "Soldadura": 12, "Fabricado": 1, "Galvanizado": 1, "Embalaje": 8}
 RATIO_DEF = {"Ingeniería": 120.0, "CNCL": 120.0, "DoblezL": 100.0, "Soldadura": 60.0, "Fabricado": 1500.0, "Galvanizado": 2000.0, "Embalaje": 350.0}
 OEE_DEF = {"Ingeniería": 90.0, "CNCL": 45.0, "DoblezL": 90.0, "Soldadura": 90.0, "Fabricado": 90.0, "Galvanizado": 90.0, "Embalaje": 90.0}
-VERSION_KEY = "v19_umbral_10kg_terminado"
+VERSION_KEY = "v20_flujo_chart_interactive"
 
 # Feriados nacionales de Chile (no regionales) 2025 - 2028
 FERIADOS_CL = {pd.Timestamp(d).normalize() for d in [
@@ -103,7 +105,6 @@ def num_val(v):
     except Exception: return 0.0
 
 def kg_pendiente_val(v):
-    """Retorna 0.0 si el remanente por procesar es <= 10 kg (proceso terminado)."""
     val = num_val(v)
     return val if val > UMBRAL_TERMINADO_KG else 0.0
 
@@ -130,6 +131,93 @@ def sems_consecutivas(w_ini, w_fin, min_c=1):
         res.append(f"{iy}-{iw:02d}")
         cur += pd.Timedelta(weeks=1)
     return res
+
+def construir_serie_cola_proceso(df_cola, proc_sel, granularidad, mat_dot, dot_def, oee_val, ratio_val, f_u):
+    if df_cola.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    rows = []
+    for _, r in df_cola.iterrows():
+        kg = float(r["Kilos"])
+        if kg <= 0:
+            continue
+        cur = pd.Timestamp(r["Inicio"]).normalize()
+        end_n = pd.Timestamp(r["Fin"]).normalize()
+        dias_h = []
+        tot_h = 0.0
+        while cur <= end_n:
+            h = hrs_dia_cl(cur)
+            if h > 0:
+                dias_h.append((cur, h))
+                tot_h += h
+            cur += pd.Timedelta(days=1)
+        if tot_h == 0:
+            d0 = pd.Timestamp(r["Inicio"]).normalize()
+            dias_h = [(d0, 1.0)]
+            tot_h = 1.0
+
+        for d_w, h_w in dias_h:
+            kg_d = (h_w / tot_h) * kg
+            if granularidad == "Diario":
+                s_key = d_w.strftime("%Y-%m-%d")
+                p_lbl = d_w.strftime("%d/%m/%Y")
+            elif granularidad == "Semanal":
+                iy, iw, _ = d_w.isocalendar()
+                s_key = f"{iy}-{iw:02d}"
+                p_lbl = s_key
+            else:
+                s_key = d_w.strftime("%Y-%m")
+                p_lbl = s_key
+            rows.append({
+                "Sort_Key": s_key,
+                "Periodo": p_lbl,
+                "ID_Fila": r["Identificador de fila"],
+                "Subproyecto": r["Subproyecto"],
+                "Kilos": kg_d,
+                "Valor": kg_d / f_u
+            })
+
+    if not rows:
+        return pd.DataFrame(), pd.DataFrame()
+
+    df_det = pd.DataFrame(rows)
+    df_agg = df_det.groupby(["Sort_Key", "Periodo"], as_index=False).agg(
+        Kilos=("Kilos", "sum"),
+        Valor=("Valor", "sum"),
+        Lotes=("ID_Fila", "nunique")
+    ).sort_values("Sort_Key").reset_index(drop=True)
+
+    fila_dot = mat_dot[mat_dot["Proceso"] == proc_sel] if not mat_dot.empty else pd.DataFrame()
+    def get_oper(sem_str):
+        if not fila_dot.empty and sem_str in fila_dot.columns:
+            v = pd.to_numeric(fila_dot[sem_str].values[0], errors="coerce")
+            if pd.notna(v):
+                return float(v)
+        return float(dot_def)
+
+    caps_u = []
+    for _, ra in df_agg.iterrows():
+        sk = ra["Sort_Key"]
+        if granularidad == "Diario":
+            dt_d = pd.Timestamp(sk)
+            sem_s = f"{dt_d.isocalendar()[0]}-{dt_d.isocalendar()[1]:02d}"
+            cap_kg = get_oper(sem_s) * hrs_dia_cl(dt_d) * oee_val * ratio_val
+        elif granularidad == "Semanal":
+            hrs_s = info_sem_iso(sk)[0]
+            cap_kg = get_oper(sk) * hrs_s * oee_val * ratio_val
+        else:
+            dt_m1 = pd.Timestamp(f"{sk}-01")
+            dt_m2 = dt_m1 + pd.offsets.MonthEnd(1)
+            cap_kg = 0.0
+            for d_m in pd.date_range(dt_m1, dt_m2):
+                hm = hrs_dia_cl(d_m)
+                if hm > 0:
+                    sem_s = f"{d_m.isocalendar()[0]}-{d_m.isocalendar()[1]:02d}"
+                    cap_kg += get_oper(sem_s) * hm * oee_val * ratio_val
+        caps_u.append(cap_kg / f_u)
+
+    df_agg["Capacidad"] = caps_u
+    return df_agg, df_det
 
 # -------------------------------------------------------------
 # 2. GENERADOR VECTORIAL PDF 1.4 ESTÁNDAR
@@ -526,13 +614,11 @@ def programar_cola(kgs, cap_d, hoy_ts, cur_dict, min_off=0.0):
     d = {p: kgs.get(p, 0.0) / cap_d[p] for p in PROCESOS}
     s_a, e_a = {}, {}
 
-    # 1. Ingeniería
     s_a["Ingeniería"] = max(min_off, cur_dict["Ingeniería"]) if d["Ingeniería"] > 0 else min_off
     e_a["Ingeniería"] = s_a["Ingeniería"] + d["Ingeniería"]
     if d["Ingeniería"] > 0:
         cur_dict["Ingeniería"] = e_a["Ingeniería"]
 
-    # 2. CNCL (Ingeniería <= 50% avance CNCL)
     if d["CNCL"] > 0:
         req_s = s_a["Ingeniería"] + 0.50 * d["Ingeniería"]
         req_c50 = e_a["Ingeniería"] - 0.50 * d["CNCL"]
@@ -544,7 +630,6 @@ def programar_cola(kgs, cap_d, hoy_ts, cur_dict, min_off=0.0):
         s_a["CNCL"] = e_a["Ingeniería"]
         e_a["CNCL"] = s_a["CNCL"]
 
-    # 3. DoblezL
     if d["DoblezL"] > 0:
         req_dob = s_a["CNCL"] + 0.30 * d["CNCL"] if d["CNCL"] > 0 else e_a["Ingeniería"]
         s_a["DoblezL"] = max(req_dob, e_a["CNCL"] - 0.90 * d["DoblezL"], cur_dict["DoblezL"])
@@ -555,7 +640,6 @@ def programar_cola(kgs, cap_d, hoy_ts, cur_dict, min_off=0.0):
         s_a["DoblezL"] = s_a["CNCL"] + 0.30 * d["CNCL"] if d["CNCL"] > 0 else e_a["Ingeniería"]
         e_a["DoblezL"] = s_a["DoblezL"]
 
-    # 4. Soldadura
     if d["Soldadura"] > 0:
         if d["DoblezL"] > 0:
             req_sol = max(s_a["DoblezL"] + 0.25 * d["DoblezL"], e_a["DoblezL"] - 0.90 * d["Soldadura"])
@@ -574,7 +658,6 @@ def programar_cola(kgs, cap_d, hoy_ts, cur_dict, min_off=0.0):
         s_a["Soldadura"] = e_a["DoblezL"] if d["DoblezL"] > 0 else (s_a["CNCL"] + 0.30 * d["CNCL"] if d["CNCL"] > 0 else e_a["Ingeniería"])
         e_a["Soldadura"] = s_a["Soldadura"]
 
-    # 5. Fabricado (CNCL, DoblezL y Soldadura <= 90% avance Fabricado)
     max_up_fab = max(e_a["Ingeniería"], e_a["CNCL"], e_a["DoblezL"], e_a["Soldadura"])
     if d["Soldadura"] > 0:
         req_fab_s = s_a["Soldadura"] + 0.50 * d["Soldadura"]
@@ -594,7 +677,6 @@ def programar_cola(kgs, cap_d, hoy_ts, cur_dict, min_off=0.0):
         s_a["Fabricado"] = max_up_fab
         e_a["Fabricado"] = max_up_fab
 
-    # 6. Galvanizado (Fabricado <= 90% avance Galvanizado)
     if d["Galvanizado"] > 0:
         req_gal_s = s_a["Fabricado"] + 0.50 * d["Fabricado"] if d["Fabricado"] > 0 else e_a["Fabricado"]
         s_a["Galvanizado"] = max(req_gal_s, e_a["Fabricado"] - 0.90 * d["Galvanizado"], cur_dict["Galvanizado"])
@@ -605,7 +687,6 @@ def programar_cola(kgs, cap_d, hoy_ts, cur_dict, min_off=0.0):
         s_a["Galvanizado"] = e_a["Fabricado"]
         e_a["Galvanizado"] = e_a["Fabricado"]
 
-    # 7. Embalaje (Galvanizado <= 90% avance Embalaje)
     if d["Embalaje"] > 0:
         req_emb_s = s_a["Galvanizado"] + 0.30 * d["Galvanizado"] if d["Galvanizado"] > 0 else e_a["Galvanizado"]
         s_a["Embalaje"] = max(req_emb_s, e_a["Galvanizado"] - 0.90 * d["Embalaje"], cur_dict["Embalaje"])
@@ -683,7 +764,6 @@ def ejecutar_edd_cartera(lotes_tuple, cap_dia_tuple, hoy_str):
     filas_res, gantt_all = [], []
 
     for idx_edd, it in enumerate(lotes_tuple, 1):
-        # Todo proceso con <= 10 kg por procesar se considera terminado (0 kg)
         raw_kgs = dict(it["kgs"])
         kgs = {p: (float(raw_kgs.get(p, 0.0)) if float(raw_kgs.get(p, 0.0)) > UMBRAL_TERMINADO_KG else 0.0) for p in PROCESOS}
         activos_reales = [p for p in PROCESOS if kgs[p] > 0.0]
@@ -866,7 +946,6 @@ try:
 
     lotes_prep = []
     for _, lt in df_hor.iterrows():
-        # Aplica umbral <= 10 kg como proceso terminado (0 kg)
         kgs = {p: kg_pendiente_val(lt.get(col)) if col else 0.0 for p, col in [("Ingeniería",c_kg_ing),("CNCL",c_kg_cncl),("DoblezL",c_kg_dob),("Soldadura",c_kg_sol),("Fabricado",c_kg_fab),("Galvanizado",c_kg_gal),("Embalaje",c_kg_emb)]}
         activos = [p for p in PROCESOS if kgs[p] > 0.0]
         lotes_prep.append({
@@ -1047,10 +1126,12 @@ try:
     # =============================================================
     with tab_flujo:
         st.markdown("### 🔀 Flujo Operativo de Planta & Toneladas en Cola por Estación")
-        st.caption(f"Haz clic en cualquiera de las cajas de proceso para auditar los proyectos en cola (> {UMBRAL_TERMINADO_KG:.0f} kg) ordenados por fecha de entrega ascendente.")
+        st.caption(f"Haz clic en cualquiera de las cajas de proceso para visualizar su cola de trabajo (> {UMBRAL_TERMINADO_KG:.0f} kg) y auditar los proyectos ordenados por fecha de entrega ascendente.")
 
         if "flujo_proc_sel" not in st.session_state:
             st.session_state.flujo_proc_sel = "CNCL"
+        if "flujo_chart_nonce" not in st.session_state:
+            st.session_state.flujo_chart_nonce = 0
 
         df_gf_flujo = df_gantt[df_gantt["Identificador de fila"].isin(lotes_vis)].copy()
         cola_info = {}
@@ -1084,34 +1165,185 @@ try:
                 use_container_width=True
             ):
                 st.session_state.flujo_proc_sel = p_key
+                st.session_state.flujo_chart_nonce += 1
                 st.rerun()
 
         proc_f_sel = st.session_state.flujo_proc_sel
         lbl_f_sel = dict(nombres_caja).get(proc_f_sel, proc_f_sel)
         ton_tot_sel, cnt_tot_sel = cola_info[proc_f_sel]
 
-        st.markdown("---")
-        st.markdown(f"#### 📦 Proyectos en Cola — **{lbl_f_sel}** (`{ton_tot_sel:,.2f} Ton` | `{cnt_tot_sel}` lotes ordenados por Fecha de Entrega)")
-
         df_cola_proc = df_gf_flujo[(df_gf_flujo["Proceso"] == proc_f_sel) & (df_gf_flujo["Kilos"] > UMBRAL_TERMINADO_KG)].copy() if not df_gf_flujo.empty else pd.DataFrame()
+
+        st.markdown("---")
         if df_cola_proc.empty:
             st.success(f"✅ No hay proyectos pendientes en cola para **{lbl_f_sel}** (todos los lotes tienen ≤ {UMBRAL_TERMINADO_KG:.0f} kg).")
         else:
-            df_cola_proc = df_cola_proc.sort_values(by=["Fecha_DT", "Subproyecto", "Identificador de fila"], ascending=[True, True, True]).reset_index(drop=True)
-            df_tabla_cola = pd.DataFrame({
-                "Orden": [f"#{i+1}" for i in range(len(df_cola_proc))],
-                "ID Fila": df_cola_proc["Identificador de fila"],
-                "Proyecto": df_cola_proc["Proyecto_Display"],
-                "Subproyecto": df_cola_proc["Subproyecto"],
-                "Toneladas en Cola (t)": df_cola_proc["Kilos"].map(lambda x: f"{x/1000.0:,.2f}"),
-                "Kilos en Cola (kg)": df_cola_proc["Kilos"].map(lambda x: f"{x:,.0f}"),
-                "Días Est. Proceso": df_cola_proc["Duracion"].astype(int),
-                "Inicio Est. Proceso": pd.to_datetime(df_cola_proc["Inicio"]).dt.strftime("%d/%m/%Y"),
-                "Término Est. Proceso": pd.to_datetime(df_cola_proc["Fin"]).dt.strftime("%d/%m/%Y"),
-                "Fecha Obj. Proceso": pd.to_datetime(df_cola_proc["Fecha_Limite"]).dt.strftime("%d/%m/%Y"),
-                "Fecha Entrega Prog.": df_cola_proc["Fecha_Prog_Str"],
-                "Estado / Desviación": df_cola_proc["Diagnostico"],
+            # ---------------------------------------------------------
+            # GRÁFICO INTERACTIVO DE COLA DE TRABAJO (DIARIO / SEMANAL / MENSUAL)
+            # ---------------------------------------------------------
+            cg_top1, cg_top2 = st.columns([2.4, 3.6])
+            with cg_top1:
+                gran_flujo = st.radio(
+                    "📊 Visualización de Cola de Trabajo:",
+                    ["Diario", "Semanal", "Mensual"],
+                    index=1,
+                    horizontal=True,
+                    key="flujo_gran_sel"
+                )
+
+            df_agg_f, df_det_f = construir_serie_cola_proceso(
+                df_cola=df_cola_proc,
+                proc_sel=proc_f_sel,
+                granularidad=gran_flujo,
+                mat_dot=st.session_state.matriz_dotacion_semanal,
+                dot_def=DOTACION_DEF[proc_f_sel],
+                oee_val=oee_act[proc_f_sel],
+                ratio_val=ratios_act.get(proc_f_sel, RATIO_DEF[proc_f_sel]),
+                f_u=f_u
+            )
+
+            periodo_clic = None
+            if not df_agg_f.empty:
+                chart_key = f"plotly_cola_{proc_f_sel}_{gran_flujo}_{st.session_state.flujo_chart_nonce}"
+                prev_state = st.session_state.get(chart_key)
+                if prev_state is not None:
+                    sel_o = prev_state.get("selection") if isinstance(prev_state, dict) else getattr(prev_state, "selection", None)
+                    pts_o = sel_o.get("points", []) if isinstance(sel_o, dict) else getattr(sel_o, "points", [])
+                    if pts_o:
+                        xv = pts_o[0].get("x") if isinstance(pts_o[0], dict) else getattr(pts_o[0], "x", None)
+                        if xv is not None and str(xv) in df_agg_f["Periodo"].values:
+                            periodo_clic = str(xv)
+
+                bar_colors = []
+                for _, rb in df_agg_f.iterrows():
+                    per_s = str(rb["Periodo"])
+                    is_over = (rb["Capacidad"] > 0 and rb["Valor"] > rb["Capacidad"])
+                    if periodo_clic is not None:
+                        if per_s == periodo_clic:
+                            bar_colors.append("#0284c7")
+                        else:
+                            bar_colors.append("#fca5a5" if is_over else "#cbd5e1")
+                    else:
+                        bar_colors.append("#dc2626" if is_over else "#135b79")
+
+                fig_cola = go.Figure()
+                fig_cola.add_trace(go.Bar(
+                    x=df_agg_f["Periodo"],
+                    y=df_agg_f["Valor"],
+                    name=f"Carga en Cola ({u_lbl})",
+                    marker_color=bar_colors,
+                    text=df_agg_f["Valor"].map(lambda v: fmt_u(v * f_u, f_u, fmt_s)),
+                    textposition="outside",
+                    customdata=np.stack([df_agg_f["Lotes"], df_agg_f["Capacidad"]], axis=-1),
+                    hovertemplate=(
+                        "<b>Periodo:</b> %{x}<br>"
+                        f"<b>Carga en Cola:</b> %{{y:,.2f}} {u_lbl}<br>"
+                        f"<b>Capacidad Estación:</b> %{{customdata[1]:,.2f}} {u_lbl}<br>"
+                        "<b>Lotes Activos:</b> %{customdata[0]}<extra></extra>"
+                    )
+                ))
+                fig_cola.add_trace(go.Scatter(
+                    x=df_agg_f["Periodo"],
+                    y=df_agg_f["Capacidad"],
+                    name=f"Capacidad {gran_flujo} ({u_lbl})",
+                    mode="lines+markers",
+                    line=dict(color="#f59e0b", width=2.2, dash="dash"),
+                    marker=dict(size=6, color="#d97706"),
+                    hovertemplate=f"<b>Capacidad ({gran_flujo}):</b> %{{y:,.2f}} {u_lbl}<extra></extra>"
+                ))
+
+                max_y_val = max(float(df_agg_f["Valor"].max()), float(df_agg_f["Capacidad"].max())) * 1.18
+                fig_cola.update_layout(
+                    title=dict(
+                        text=f"Cola de Trabajo ({gran_flujo}) — {lbl_f_sel} ({unidad_medida})",
+                        font=dict(size=14, color="#0f172a")
+                    ),
+                    xaxis=dict(title=f"Periodo ({gran_flujo})", type="category", tickangle=-35 if len(df_agg_f) > 12 else 0),
+                    yaxis=dict(title=f"Carga ({u_lbl})", range=[0, max(1.0, max_y_val)], gridcolor="#e2e8f0"),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    plot_bgcolor="#ffffff",
+                    paper_bgcolor="#ffffff",
+                    margin=dict(l=45, r=20, t=55, b=45),
+                    height=330,
+                    clickmode="event+select"
+                )
+
+                supports_on_select = "on_select" in inspect.signature(st.plotly_chart).parameters
+                if supports_on_select:
+                    chart_ev = st.plotly_chart(
+                        fig_cola,
+                        use_container_width=True,
+                        on_select="rerun",
+                        selection_mode=["points"],
+                        key=chart_key
+                    )
+                    if chart_ev is not None:
+                        sel_o = chart_ev.get("selection") if isinstance(chart_ev, dict) else getattr(chart_ev, "selection", None)
+                        pts_o = sel_o.get("points", []) if isinstance(sel_o, dict) else getattr(sel_o, "points", [])
+                        if pts_o:
+                            xv = pts_o[0].get("x") if isinstance(pts_o[0], dict) else getattr(pts_o[0], "x", None)
+                            if xv is not None and str(xv) in df_agg_f["Periodo"].values:
+                                periodo_clic = str(xv)
+                        else:
+                            periodo_clic = None
+                else:
+                    st.plotly_chart(fig_cola, use_container_width=True, key=chart_key)
+
+                with cg_top2:
+                    if periodo_clic:
+                        c_b1, c_b2 = st.columns([3.2, 1.5])
+                        kg_per_sel = float(df_agg_f.loc[df_agg_f["Periodo"] == periodo_clic, "Kilos"].sum())
+                        c_b1.info(f"🎯 **Filtro activo por barra:** `{periodo_clic}` (`{fmt_u(kg_per_sel, f_u, fmt_s)} {u_corto}` en este periodo)")
+                        if c_b2.button("✖️ Ver toda la cola", key="btn_clear_bar_flujo", use_container_width=True):
+                            st.session_state.flujo_chart_nonce += 1
+                            st.rerun()
+                    else:
+                        st.write("")
+                        st.caption("💡 Haz clic sobre cualquier barra del gráfico para filtrar la tabla **Proyectos en Cola** por ese día, semana o mes.")
+
+            # ---------------------------------------------------------
+            # TABLA DE PROYECTOS EN COLA (FILTRADA SI HAY BARRA SELECCIONADA)
+            # ---------------------------------------------------------
+            df_cola_tabla = df_cola_proc.copy()
+            kg_en_periodo_map = {}
+            if periodo_clic and not df_det_f.empty:
+                df_per_sub = df_det_f[df_det_f["Periodo"] == periodo_clic]
+                pares_validos = set(zip(df_per_sub["ID_Fila"], df_per_sub["Subproyecto"]))
+                kg_en_periodo_map = df_per_sub.groupby(["ID_Fila", "Subproyecto"])["Kilos"].sum().to_dict()
+                df_cola_tabla = df_cola_tabla[
+                    df_cola_tabla.apply(lambda r: (r["Identificador de fila"], r["Subproyecto"]) in pares_validos, axis=1)
+                ].copy()
+
+            ton_tabla_sel = float(df_cola_tabla["Kilos"].sum()) / 1000.0 if not df_cola_tabla.empty else 0.0
+            cnt_tabla_sel = len(df_cola_tabla)
+            sufijo_per = f" — Periodo `{periodo_clic}`" if periodo_clic else ""
+
+            st.markdown(f"#### 📦 Proyectos en Cola — **{lbl_f_sel}**{sufijo_per} (`{ton_tabla_sel:,.2f} Ton` | `{cnt_tabla_sel}` lotes ordenados por Fecha de Entrega)")
+
+            df_cola_tabla = df_cola_tabla.sort_values(by=["Fecha_DT", "Subproyecto", "Identificador de fila"], ascending=[True, True, True]).reset_index(drop=True)
+            cols_tabla_dict = {
+                "Orden": [f"#{i+1}" for i in range(len(df_cola_tabla))],
+                "ID Fila": df_cola_tabla["Identificador de fila"],
+                "Proyecto": df_cola_tabla["Proyecto_Display"],
+                "Subproyecto": df_cola_tabla["Subproyecto"],
+                "Toneladas en Cola (t)": df_cola_tabla["Kilos"].map(lambda x: f"{x/1000.0:,.2f}"),
+                "Kilos en Cola (kg)": df_cola_tabla["Kilos"].map(lambda x: f"{x:,.0f}"),
+            }
+            if periodo_clic:
+                cols_tabla_dict[f"Carga en {periodo_clic} ({u_lbl})"] = df_cola_tabla.apply(
+                    lambda r: fmt_u(kg_en_periodo_map.get((r["Identificador de fila"], r["Subproyecto"]), 0.0), f_u, fmt_s),
+                    axis=1
+                )
+            cols_tabla_dict.update({
+                "Días Est. Proceso": df_cola_tabla["Duracion"].astype(int),
+                "Inicio Est. Proceso": pd.to_datetime(df_cola_tabla["Inicio"]).dt.strftime("%d/%m/%Y"),
+                "Término Est. Proceso": pd.to_datetime(df_cola_tabla["Fin"]).dt.strftime("%d/%m/%Y"),
+                "Fecha Obj. Proceso": pd.to_datetime(df_cola_tabla["Fecha_Limite"]).dt.strftime("%d/%m/%Y"),
+                "Fecha Entrega Prog.": df_cola_tabla["Fecha_Prog_Str"],
+                "Estado / Desviación": df_cola_tabla["Diagnostico"],
             })
+
+            df_tabla_cola = pd.DataFrame(cols_tabla_dict)
             st.dataframe(df_tabla_cola, hide_index=True, use_container_width=True, height=440)
             st.download_button(
                 f"📥 Descargar Cola de {lbl_f_sel} (CSV)",
