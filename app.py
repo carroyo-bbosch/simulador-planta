@@ -15,11 +15,12 @@ st.markdown("<style>[data-testid='stSidebar']>div:first-child{padding-top:.55rem
 # 0. CONFIGURACIÓN BASE, OEE POR PROCESO Y CALENDARIO CHILE
 # -------------------------------------------------------------
 SHEET_ID_ESTIMACION_DEF = 5915829825654660
+UMBRAL_TERMINADO_KG = 10.0
 PROCESOS = ["Ingeniería", "CNCL", "DoblezL", "Soldadura", "Fabricado", "Galvanizado", "Embalaje"]
 DOTACION_DEF = {"Ingeniería": 8, "CNCL": 12, "DoblezL": 3, "Soldadura": 12, "Fabricado": 1, "Galvanizado": 1, "Embalaje": 8}
 RATIO_DEF = {"Ingeniería": 120.0, "CNCL": 120.0, "DoblezL": 100.0, "Soldadura": 60.0, "Fabricado": 1500.0, "Galvanizado": 2000.0, "Embalaje": 350.0}
 OEE_DEF = {"Ingeniería": 90.0, "CNCL": 45.0, "DoblezL": 90.0, "Soldadura": 90.0, "Fabricado": 90.0, "Galvanizado": 90.0, "Embalaje": 90.0}
-VERSION_KEY = "v18_cap50_90_flujo_tab"
+VERSION_KEY = "v19_umbral_10kg_terminado"
 
 # Feriados nacionales de Chile (no regionales) 2025 - 2028
 FERIADOS_CL = {pd.Timestamp(d).normalize() for d in [
@@ -100,6 +101,11 @@ def num_val(v):
     elif "," in s: s = s.replace(",", ".")
     try: return max(0.0, float(s))
     except Exception: return 0.0
+
+def kg_pendiente_val(v):
+    """Retorna 0.0 si el remanente por procesar es <= 10 kg (proceso terminado)."""
+    val = num_val(v)
+    return val if val > UMBRAL_TERMINADO_KG else 0.0
 
 def pct_val(v):
     if pd.isna(v) or v is None: return 0.0
@@ -346,7 +352,7 @@ def render_tabla_despachos(df_m, tot, f_u, fmt, u_lbl):
         diag, tip = str(r["Diagnostico"]), r.get("Ruta_Detalle", "")
         b_cls = "b-red" if "Retraso" in diag else ("b-blu" if "Adelanto" in diag else "b-grn")
         badge = f"<span class='{b_cls}'>{diag}</span>"
-        ci = "color:#dc2626;font-weight:600" if r["Kg por cargar (Ing)"] > 0 else "color:#475569"
+        ci = "color:#dc2626;font-weight:600" if r["Kg por cargar (Ing)"] > UMBRAL_TERMINADO_KG else "color:#475569"
         cf = "color:#dc2626;font-weight:700" if r["Desviacion_Dias"] > 0 else ("color:#0369a1;font-weight:700" if "Adelanto" in diag else "color:#15803d;font-weight:700")
         rows.append(
             f"<tr class='row' style='background:{bg}'><td title='{tip}' class='l b c0' style='background:{bg}'>{r['Identificador de fila']}</td><td title='{tip}' class='l c1' style='background:{bg}'>{r['Subproyecto']}</td><td class='c c2 cut' style='background:{bg}'>{badge}</td>"
@@ -497,6 +503,25 @@ def dist_semanal_cl(df_g):
             rows.append({"Semana": wk, "Proceso": r["Proceso"], "Identificador de fila": r.get("Identificador de fila", ""), "Estructura": r.get("Estructura", ""), "Kilos": (hw / tot_h) * r["Kilos"]})
     return pd.DataFrame(rows)
 
+def ciclo_relativo_lote(kgs, cap_d):
+    d = {p: kgs.get(p, 0.0) / cap_d[p] for p in PROCESOS}
+    s_r, e_r = {}, {}
+    s_r["Ingeniería"] = 0.0; e_r["Ingeniería"] = d["Ingeniería"]
+    s_r["CNCL"] = 0.50 * d["Ingeniería"]; e_r["CNCL"] = s_r["CNCL"] + d["CNCL"]
+    s_r["DoblezL"] = s_r["CNCL"] + 0.30 * d["CNCL"]; e_r["DoblezL"] = s_r["DoblezL"] + d["DoblezL"]
+    s_r["Soldadura"] = max(s_r["DoblezL"] + 0.25 * d["DoblezL"], s_r["CNCL"] + 0.50 * d["CNCL"]) if d["DoblezL"] > 0 else s_r["CNCL"] + 0.30 * d["CNCL"]
+    e_r["Soldadura"] = s_r["Soldadura"] + d["Soldadura"]
+    s_r["Fabricado"] = (s_r["Soldadura"] + 0.50 * d["Soldadura"]) if d["Soldadura"] > 0 else ((s_r["DoblezL"] + 0.50 * d["DoblezL"]) if d["DoblezL"] > 0 else s_r["CNCL"] + 0.50 * d["CNCL"])
+    e_r["Fabricado"] = max(s_r["Fabricado"] + d["Fabricado"], e_r["Ingeniería"], e_r["CNCL"], e_r["DoblezL"], e_r["Soldadura"])
+    if d["Fabricado"] > 0: s_r["Fabricado"] = max(s_r["Fabricado"], e_r["Fabricado"] - d["Fabricado"])
+    s_r["Galvanizado"] = max(s_r["Fabricado"] + 0.50 * d["Fabricado"], e_r["Soldadura"]) if d["Fabricado"] > 0 else e_r["Soldadura"]
+    e_r["Galvanizado"] = max(s_r["Galvanizado"] + d["Galvanizado"], e_r["Fabricado"])
+    if d["Galvanizado"] > 0: s_r["Galvanizado"] = max(s_r["Galvanizado"], e_r["Galvanizado"] - d["Galvanizado"])
+    s_r["Embalaje"] = max(s_r["Galvanizado"] + 0.30 * d["Galvanizado"], e_r["Fabricado"]) if d["Galvanizado"] > 0 else e_r["Fabricado"]
+    e_r["Embalaje"] = max(s_r["Embalaje"] + d["Embalaje"], e_r["Galvanizado"])
+    if d["Embalaje"] > 0: s_r["Embalaje"] = max(s_r["Embalaje"], e_r["Embalaje"] - d["Embalaje"])
+    return s_r, e_r, e_r["Embalaje"]
+
 def programar_cola(kgs, cap_d, hoy_ts, cur_dict, min_off=0.0):
     d = {p: kgs.get(p, 0.0) / cap_d[p] for p in PROCESOS}
     s_a, e_a = {}, {}
@@ -507,7 +532,7 @@ def programar_cola(kgs, cap_d, hoy_ts, cur_dict, min_off=0.0):
     if d["Ingeniería"] > 0:
         cur_dict["Ingeniería"] = e_a["Ingeniería"]
 
-    # 2. CNCL (Ingeniería <= 50% avance CNCL => E_Ing <= S_CNCL + 0.50 * d_CNCL)
+    # 2. CNCL (Ingeniería <= 50% avance CNCL)
     if d["CNCL"] > 0:
         req_s = s_a["Ingeniería"] + 0.50 * d["Ingeniería"]
         req_c50 = e_a["Ingeniería"] - 0.50 * d["CNCL"]
@@ -519,7 +544,7 @@ def programar_cola(kgs, cap_d, hoy_ts, cur_dict, min_off=0.0):
         s_a["CNCL"] = e_a["Ingeniería"]
         e_a["CNCL"] = s_a["CNCL"]
 
-    # 3. DoblezL (desde CNCL)
+    # 3. DoblezL
     if d["DoblezL"] > 0:
         req_dob = s_a["CNCL"] + 0.30 * d["CNCL"] if d["CNCL"] > 0 else e_a["Ingeniería"]
         s_a["DoblezL"] = max(req_dob, e_a["CNCL"] - 0.90 * d["DoblezL"], cur_dict["DoblezL"])
@@ -530,7 +555,7 @@ def programar_cola(kgs, cap_d, hoy_ts, cur_dict, min_off=0.0):
         s_a["DoblezL"] = s_a["CNCL"] + 0.30 * d["CNCL"] if d["CNCL"] > 0 else e_a["Ingeniería"]
         e_a["DoblezL"] = s_a["DoblezL"]
 
-    # 4. Soldadura (desde DoblezL o CNCL)
+    # 4. Soldadura
     if d["Soldadura"] > 0:
         if d["DoblezL"] > 0:
             req_sol = max(s_a["DoblezL"] + 0.25 * d["DoblezL"], e_a["DoblezL"] - 0.90 * d["Soldadura"])
@@ -602,7 +627,7 @@ def ciclo_relativo_lote(kgs, cap_d):
 def calcular_rangos_sin_carga(df_g, hoy_ts, cap_sem_dict, f_u, fmt_s, u_lbl):
     rows_free = []
     for p in PROCESOS:
-        sub = df_g[(df_g["Proceso"] == p) & (df_g["Kilos"] > 0) & (df_g["Fin"] >= hoy_ts)] if not df_g.empty else pd.DataFrame()
+        sub = df_g[(df_g["Proceso"] == p) & (df_g["Kilos"] > UMBRAL_TERMINADO_KG) & (df_g["Fin"] >= hoy_ts)] if not df_g.empty else pd.DataFrame()
         cap_s_val = fmt_u(cap_sem_dict.get(p, 0.0), f_u, fmt_s)
         if sub.empty:
             ini_libre = sumar_dias_cl(hoy_ts, 0)
@@ -658,12 +683,18 @@ def ejecutar_edd_cartera(lotes_tuple, cap_dia_tuple, hoy_str):
     filas_res, gantt_all = [], []
 
     for idx_edd, it in enumerate(lotes_tuple, 1):
-        kgs = dict(it["kgs"])
+        # Todo proceso con <= 10 kg por procesar se considera terminado (0 kg)
+        raw_kgs = dict(it["kgs"])
+        kgs = {p: (float(raw_kgs.get(p, 0.0)) if float(raw_kgs.get(p, 0.0)) > UMBRAL_TERMINADO_KG else 0.0) for p in PROCESOS}
+        activos_reales = [p for p in PROCESOS if kgs[p] > 0.0]
+        n_proc_real = len(activos_reales)
+        ruta_real = " → ".join(activos_reales) if activos_reales else "Terminado (≤10 kg)"
+
         f_prog = pd.Timestamp(it["f_prog"])
         f_emb = pd.Timestamp(it["f_emb"]) if it["f_emb"] else pd.NaT
-        tip = f"Prioridad EDD #{idx_edd} | Procesos ({it['n_proc']}): {it['ruta']}"
+        tip = f"Prioridad EDD #{idx_edd} | Procesos ({n_proc_real}): {ruta_real}"
 
-        if kgs["Embalaje"] < 10.0 and pd.notna(f_emb):
+        if kgs["Embalaje"] == 0.0 and pd.notna(f_emb):
             f_fin, desv, dias_tot = f_emb, max(0, (f_emb - f_prog).days), 0
             if desv > 0:
                 diag = f"🔴 Retraso (+{desv}d)"
@@ -691,10 +722,11 @@ def ejecutar_edd_cartera(lotes_tuple, cap_dia_tuple, hoy_str):
                     diag = f"🔴 Retraso (+{desv}d)"
 
             for p in PROCESOS:
-                dur_p = max(1, int(np.ceil(e_a[p] - s_a[p]))) if kgs[p] > 0 else 0
-                st_dt, en_dt = sumar_dias_cl(hoy, int(np.floor(s_a[p]))), (sumar_dias_cl(hoy, max(1, int(np.ceil(e_a[p])))) if kgs[p] > 0 else sumar_dias_cl(hoy, int(np.floor(s_a[p]))))
+                dur_p = max(1, int(np.ceil(e_a[p] - s_a[p]))) if kgs[p] > 0.0 else 0
+                st_dt = sumar_dias_cl(hoy, int(np.floor(s_a[p])))
+                en_dt = sumar_dias_cl(hoy, max(1, int(np.ceil(e_a[p])))) if kgs[p] > 0.0 else st_dt
                 f_lim = sumar_dias_cl(f_prog, -max(0, int(np.ceil(t_emb_e - e_rel[p]))))
-                fp_b = bool(kgs[p] > 0 and en_dt > f_lim)
+                fp_b = bool(kgs[p] > 0.0 and en_dt > f_lim)
                 gantt_all.append({"Identificador de fila": it["id"], "Subproyecto": it["subp"], "Proyecto_Display": it["proy"], "Fecha_Prog_Str": f_prog.strftime("%d/%m/%Y"), "Fecha_DT": f_prog, "Proceso": p, "Inicio": st_dt, "Fin": en_dt, "Fecha_Limite": f_lim, "Duracion": dur_p, "Kilos": kgs[p], "Fuera_Plazo": fp_b, "Dias_Desv_Proc": max(1, (en_dt - f_lim).days) if fp_b else 0, "Diagnostico": diag, "Ruta_Tooltip": tip})
 
         filas_res.append({
@@ -702,7 +734,7 @@ def ejecutar_edd_cartera(lotes_tuple, cap_dia_tuple, hoy_str):
             "Kg Orden Proceder": it["kg_ord"], "Kg por cargar (Ing)": kgs["Ingeniería"], "Kg por procesar CNCL": kgs["CNCL"],
             "Kg por procesar DoblezL": kgs["DoblezL"], "Kg por procesar Soldadura": kgs["Soldadura"],
             "Kg por procesar Fabricado": kgs["Fabricado"], "Kg por galvanizar": kgs["Galvanizado"], "Kg por Embalar": kgs["Embalaje"],
-            "Kilos Programados": it["kg_prog"], "Cant_Procesos": it["n_proc"], "Ruta_Detalle": tip,
+            "Kilos Programados": it["kg_prog"], "Cant_Procesos": n_proc_real, "Ruta_Detalle": tip,
             "Fecha Programada": f_prog.strftime("%d/%m/%Y"), "Fecha Estimada Finalizar": f_fin.strftime("%d/%m/%Y"),
             "Fecha_DT": f_prog, "Fecha_Fin_DT": f_fin, "Total_Dias": dias_tot, "Desviacion_Dias": desv, "Diagnostico": diag
         })
@@ -717,6 +749,7 @@ unidad_medida = st.sidebar.radio("📏 Unidad:", ["Kilos (kg)", "Toneladas (t)"]
 es_ton = (unidad_medida == "Toneladas (t)")
 f_u, fmt_s, u_lbl, u_corto = (1000.0, ",.2f", "Ton", "t") if es_ton else (1.0, ",.0f", "Kg", "kg")
 st.sidebar.caption("🕒 **Jornada Chile:** Lun-Mar 9h, Mié-Jue 8h, Vie 6h (-1h colación) | Sin feriados nac.")
+st.sidebar.caption(f"🎯 **Cierre Proceso:** ≤ {UMBRAL_TERMINADO_KG:.0f} kg se considera terminado (0 kg).")
 
 st.title("📋 Control Integral de Despachos & Simulador de Carga")
 if st.button("🔄 Refrescar Datos Smartsheet"):
@@ -833,8 +866,9 @@ try:
 
     lotes_prep = []
     for _, lt in df_hor.iterrows():
-        kgs = {p: num_val(lt.get(col)) if col else 0.0 for p, col in [("Ingeniería",c_kg_ing),("CNCL",c_kg_cncl),("DoblezL",c_kg_dob),("Soldadura",c_kg_sol),("Fabricado",c_kg_fab),("Galvanizado",c_kg_gal),("Embalaje",c_kg_emb)]}
-        activos = [p for p in PROCESOS if kgs[p] > 0]
+        # Aplica umbral <= 10 kg como proceso terminado (0 kg)
+        kgs = {p: kg_pendiente_val(lt.get(col)) if col else 0.0 for p, col in [("Ingeniería",c_kg_ing),("CNCL",c_kg_cncl),("DoblezL",c_kg_dob),("Soldadura",c_kg_sol),("Fabricado",c_kg_fab),("Galvanizado",c_kg_gal),("Embalaje",c_kg_emb)]}
+        activos = [p for p in PROCESOS if kgs[p] > 0.0]
         lotes_prep.append({
             "id": str(lt[c_id]), "subp": str(lt[c_sub]),
             "f_prog": lt["Fecha_DT"].strftime("%Y-%m-%d"),
@@ -842,7 +876,7 @@ try:
             "proy": str(lt["Proy_Disp"]), "kg_prog": float(lt["Kg_Prog_Num"]),
             "kg_ord": num_val(lt.get(c_ord)) if c_ord else float(lt["Kg_Prog_Num"]),
             "kgs": tuple(kgs.items()), "n_proc": len(activos),
-            "ruta": " → ".join(activos) if activos else "Completado / Embalado"
+            "ruta": " → ".join(activos) if activos else "Terminado (≤10 kg)"
         })
 
     lotes_prep.sort(key=lambda x: (x["f_prog"], -x["n_proc"], x["subp"]))
@@ -938,7 +972,7 @@ try:
 
         st.markdown("---")
         st.markdown(f"### 📋 Programa de Despachos & Estado de Carga por Estación ({unidad_medida})")
-        st.caption("Calculado desde hoy en cola continua ASAP (priorizada por Fecha Programada más cercana) con topes de avance 50% en CNCL y 90% en Fabricado, Galvanizado y Embalaje.")
+        st.caption(f"Calculado desde hoy en cola continua ASAP (priorizada por Fecha Programada más cercana). Todo proceso con ≤ {UMBRAL_TERMINADO_KG:.0f} kg se considera terminado (0 kg).")
         tot_d1 = {k: df_mostrar[col].sum() for k, col in [("orden","Kg Orden Proceder"),("ing","Kg por cargar (Ing)"),("cncl","Kg por procesar CNCL"),("doblez","Kg por procesar DoblezL"),("sold","Kg por procesar Soldadura"),("fab","Kg por procesar Fabricado"),("galv","Kg por galvanizar"),("emb","Kg por Embalar")]}
         components.html(render_tabla_despachos(df_mostrar, tot_d1, f_u, fmt_s, u_lbl), height=520, scrolling=False)
 
@@ -946,7 +980,7 @@ try:
         st.markdown(f"### 📊 Cuadro de Carga Semanal por Proceso ({unidad_medida})")
         info_p = {}
         for p in PROCESOS:
-            sp = df_gf[(df_gf["Proceso"] == p) & (df_gf["Kilos"] > 0)] if not df_gf.empty else pd.DataFrame()
+            sp = df_gf[(df_gf["Proceso"] == p) & (df_gf["Kilos"] > UMBRAL_TERMINADO_KG)] if not df_gf.empty else pd.DataFrame()
             kgt = float(sp["Kilos"].sum()) if not sp.empty else 0.0
             info_p[p] = {"ini": pd.to_datetime(sp["Inicio"]).min().strftime("%d/%m/%Y"), "fin": pd.to_datetime(sp["Fin"]).max().strftime("%d/%m/%Y"), "dias": int(sp["Duracion"].values[0]) if len(lotes_vis) == 1 else int(np.ceil(kgt / cap_dia_kg[p])), "total_kg": kgt} if (not sp.empty and kgt > 0) else {"ini": "-", "fin": "-", "dias": 0, "total_kg": 0.0}
         components.html(render_cuadro_semanal(piv_d, info_p, semanas_cols, cap_din_sem, f_u, fmt_s, u_lbl), height=360, scrolling=False)
@@ -979,7 +1013,7 @@ try:
                 fp, f_est_s, tip_a = (desv > 0), lt["Fecha Estimada Finalizar"], f"Desviado +{desv}d"
                 f_obj_s = lt["Fecha Programada"]
             else:
-                kg_p = num_val(lt.get(mapa_kg.get(proc_sel, ""), 0.0))
+                kg_p = kg_pendiente_val(lt.get(mapa_kg.get(proc_sel, ""), 0.0))
                 dias_p = int(np.ceil(kg_p / cap_dia_kg[proc_sel])) if kg_p > 0 else 0
                 fl = df_st[(df_st["Identificador de fila"] == id_f) & (df_st["Proceso"] == proc_sel)] if not df_st.empty else pd.DataFrame()
                 s_dict = fl.groupby("Semana")["Kilos"].sum().to_dict() if not fl.empty else {}
@@ -991,7 +1025,7 @@ try:
                     tip_a = f"Desviado +{int(rp['Dias_Desv_Proc'].values[0])}d (Fecha Objetivo: {f_obj_s})"
                 else:
                     f_est_s, f_obj_s, fp, tip_a = "-", "-", False, ""
-            if kg_p > 50.0:
+            if kg_p > UMBRAL_TERMINADO_KG:
                 lotes_t2.append({
                     "Identificador de fila": id_f, "Subproyecto": lt["Subproyecto"], "Fecha_DT": f_dt, "Cant_Procesos": int(lt["Cant_Procesos"]),
                     "Ruta_Tooltip": lt["Ruta_Detalle"], "Fecha_Despacho": lt["Fecha Programada"], "Fecha_Obj_Proc": f_obj_s,
@@ -1001,7 +1035,7 @@ try:
 
         df_t2 = pd.DataFrame(lotes_t2)
         if df_t2.empty:
-            st.info(f"🎉 No hay lotes pendientes en **{proc_sel}** (Carga ≤ {fmt_u(50.0, f_u, fmt_s)} {u_corto}).")
+            st.info(f"🎉 No hay lotes pendientes en **{proc_sel}** (todos los procesos están terminados con ≤ {fmt_u(UMBRAL_TERMINADO_KG, f_u, fmt_s)} {u_corto}).")
         else:
             df_t2 = df_t2.sort_values(by=["Fecha_DT", "Cant_Procesos", "Subproyecto"], ascending=[True, False, True])
             components.html(render_carga_proceso(df_t2, semanas_cols, cap_v, f_u, fmt_s, u_lbl), height=540, scrolling=False)
@@ -1013,7 +1047,7 @@ try:
     # =============================================================
     with tab_flujo:
         st.markdown("### 🔀 Flujo Operativo de Planta & Toneladas en Cola por Estación")
-        st.caption("Haz clic en cualquiera de las cajas de proceso para auditar los proyectos en cola ordenados por fecha de entrega ascendente.")
+        st.caption(f"Haz clic en cualquiera de las cajas de proceso para auditar los proyectos en cola (> {UMBRAL_TERMINADO_KG:.0f} kg) ordenados por fecha de entrega ascendente.")
 
         if "flujo_proc_sel" not in st.session_state:
             st.session_state.flujo_proc_sel = "CNCL"
@@ -1021,7 +1055,7 @@ try:
         df_gf_flujo = df_gantt[df_gantt["Identificador de fila"].isin(lotes_vis)].copy()
         cola_info = {}
         for p in PROCESOS:
-            sub_p = df_gf_flujo[(df_gf_flujo["Proceso"] == p) & (df_gf_flujo["Kilos"] > 0)] if not df_gf_flujo.empty else pd.DataFrame()
+            sub_p = df_gf_flujo[(df_gf_flujo["Proceso"] == p) & (df_gf_flujo["Kilos"] > UMBRAL_TERMINADO_KG)] if not df_gf_flujo.empty else pd.DataFrame()
             ton_p = float(sub_p["Kilos"].sum()) / 1000.0 if not sub_p.empty else 0.0
             cnt_p = len(sub_p)
             cola_info[p] = (ton_p, cnt_p)
@@ -1059,9 +1093,9 @@ try:
         st.markdown("---")
         st.markdown(f"#### 📦 Proyectos en Cola — **{lbl_f_sel}** (`{ton_tot_sel:,.2f} Ton` | `{cnt_tot_sel}` lotes ordenados por Fecha de Entrega)")
 
-        df_cola_proc = df_gf_flujo[(df_gf_flujo["Proceso"] == proc_f_sel) & (df_gf_flujo["Kilos"] > 0)].copy() if not df_gf_flujo.empty else pd.DataFrame()
+        df_cola_proc = df_gf_flujo[(df_gf_flujo["Proceso"] == proc_f_sel) & (df_gf_flujo["Kilos"] > UMBRAL_TERMINADO_KG)].copy() if not df_gf_flujo.empty else pd.DataFrame()
         if df_cola_proc.empty:
-            st.success(f"✅ No hay proyectos pendientes en cola para **{lbl_f_sel}** con los filtros actuales.")
+            st.success(f"✅ No hay proyectos pendientes en cola para **{lbl_f_sel}** (todos los lotes tienen ≤ {UMBRAL_TERMINADO_KG:.0f} kg).")
         else:
             df_cola_proc = df_cola_proc.sort_values(by=["Fecha_DT", "Subproyecto", "Identificador de fila"], ascending=[True, True, True]).reset_index(drop=True)
             df_tabla_cola = pd.DataFrame({
@@ -1297,7 +1331,7 @@ try:
             p_crit = set(df_cuellos["Proceso"].unique()) if not df_cuellos.empty else {p for p in PROCESOS if cursor[p] > max(0.0, backward_shift) and df_ce[p].sum() > 0}
             imp_rows = []
             if not df_gantt.empty and p_crit:
-                dgc = df_gantt[(df_gantt["Proceso"].isin(p_crit)) & (df_gantt["Kilos"] > 0) & (df_gantt["Fin"] >= max(hoy, f_ini_req_dt))]
+                dgc = df_gantt[(df_gantt["Proceso"].isin(p_crit)) & (df_gantt["Kilos"] > UMBRAL_TERMINADO_KG) & (df_gantt["Fin"] >= max(hoy, f_ini_req_dt))]
                 if not dgc.empty:
                     grp = dgc.groupby(["Proyecto_Display", "Subproyecto", "Identificador de fila", "Fecha_Prog_Str"], as_index=False).agg(Kilos_Oc=("Kilos", "sum"), Procs=("Proceso", lambda x: ", ".join(sorted(set(x)))), Fin_E=("Fin", "max")).sort_values("Kilos_Oc", ascending=False)
                     for _, rp in grp.head(12).iterrows():
